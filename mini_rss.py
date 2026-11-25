@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover - available on Windows only
     winreg = None
 
 APP_NAME = "MiniRSS"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 REFRESH_INTERVAL_MS = 15 * 60 * 1000
 UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 REQUEST_TIMEOUT = 15
@@ -94,6 +94,15 @@ THEMES = {
         "input": "#202630", "disabled": "#657287", "hover": "#343e50",
         "sidebar": "#202630", "detail": "#202630", "accent_soft": "#2d3b60",
     },
+    "iOS 27 · Liquid Glass": {
+        "bg": "#e7eefb", "surface": "#f5f8ff", "fg": "#17243a", "muted": "#71819a",
+        "accent": "#3478f6", "accent_active": "#2467e6", "button": "#f8fbff",
+        "heading": "#edf3ff", "tree": "#f8faff", "selected": "#dce9ff",
+        "border": "#d5e1f4", "text_bg": "#f3f7ff", "text_fg": "#263852",
+        "input": "#f9fbff", "disabled": "#a2b0c4", "hover": "#e7f0ff",
+        "sidebar": "#e4edfb", "detail": "#eff5ff", "accent_soft": "#dceaff",
+        "glass": "#f7faff", "glass_edge": "#d2e0f5", "glass_highlight": "#ffffff",
+    },
 }
 
 # Segoe MDL2 Assets is part of Windows 10/11 and provides crisp vector-like UI glyphs.
@@ -124,6 +133,9 @@ PRESET_FEEDS = [
     {"group": "Технологии", "title": "Ars Technica", "url": "https://feeds.arstechnica.com/arstechnica/index"},
     {"group": "Технологии", "title": "Hacker News", "url": "https://news.ycombinator.com/rss"},
     {"group": "Наука и космос", "title": "NASA — последние публикации", "url": "https://www.nasa.gov/feed/"},
+    {"group": "Технологии", "title": "Rozetked · Google Новости", "url": "https://news.google.com/rss/search?q=site%3Arozetked.me&hl=ru&gl=RU&ceid=RU:ru"},
+    {"group": "Технологии", "title": "iGuides · Google Новости", "url": "https://news.google.com/rss/search?q=site%3Aiguides.ru&hl=ru&gl=RU&ceid=RU:ru"},
+    {"group": "Технологии", "title": "4PDA", "url": "https://4pda.to/feed/"},
 ]
 
 
@@ -588,6 +600,7 @@ class MiniRSSApp:
         self._load_settings()
         self._style()
         self._build_ui()
+        self._apply_theme_layout()
         self._load_feeds()
         self._load_favorites()
         self._render_feed_filter()
@@ -620,24 +633,30 @@ class MiniRSSApp:
             return
         try:
             # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 on current Windows 11, 19 on older builds.
-            value = ctypes.c_int(self.theme_var.get() == "Тёмная")
             hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            value = ctypes.c_int(self.theme_var.get() == "Тёмная")
             for attribute in (20, 19):
                 result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
                     hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)
                 )
                 if result == 0:
                     break
+            # Windows 11 system backdrop: a translucent Mica/Acrylic-like base
+            # for the dedicated Liquid Glass theme. Older Windows builds ignore it.
+            backdrop_value = 3 if self.theme_var.get() == "iOS 27 · Liquid Glass" else 0
+            backdrop = ctypes.c_int(backdrop_value)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 38, ctypes.byref(backdrop), ctypes.sizeof(backdrop)
+            )
         except Exception:
             pass
 
     def _palette(self):
         colors = THEMES[self.theme_var.get()]
-        return {
-            **colors,
-            "tooltip_bg": "#242a35" if self.theme_var.get() == "Тёмная" else "#202633",
-            "tooltip_fg": "#ffffff",
-        }
+        tooltip_bg = "#242a35" if self.theme_var.get() == "Тёмная" else (
+            "#263852" if self.theme_var.get() == "iOS 27 · Liquid Glass" else "#202633"
+        )
+        return {**colors, "tooltip_bg": tooltip_bg, "tooltip_fg": "#ffffff"}
 
     def _glyph(self, name: str) -> str:
         if self.icon_font[0] == "Segoe MDL2 Assets":
@@ -782,21 +801,106 @@ class MiniRSSApp:
         style.map("TCheckbutton", background=[("active", colors["bg"])])
         style.configure("TLabelframe", background=colors["bg"], foreground=colors["fg"], bordercolor=colors["border"])
         style.configure("TLabelframe.Label", background=colors["bg"], foreground=colors["fg"], font=("Segoe UI", 9, "bold"))
+        if self.theme_var.get() == "iOS 27 · Liquid Glass":
+            # Soft blue-white surfaces, bright edges and generous spacing evoke
+            # the layered Liquid Glass look while keeping native Windows controls.
+            style.configure("TButton", font=("Segoe UI", 10), padding=(14, 10),
+                            background=colors["glass"], foreground=colors["fg"],
+                            borderwidth=1, bordercolor=colors["glass_edge"], relief="flat")
+            style.map("TButton", background=[("active", colors["hover"]), ("pressed", colors["selected"])],
+                      foreground=[("disabled", colors["disabled"])])
+            style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"), padding=(16, 10),
+                            background=colors["accent"], foreground="#ffffff",
+                            borderwidth=1, bordercolor=colors["glass_highlight"], relief="flat")
+            style.configure("Icon.TButton", font=self.icon_font, padding=(10, 9), width=3,
+                            background=colors["glass"], foreground=colors["fg"],
+                            borderwidth=1, bordercolor=colors["glass_edge"], relief="flat")
+            style.configure("Card.TFrame", background=colors["surface"], borderwidth=1,
+                            bordercolor=colors["glass_highlight"], relief="solid")
+            style.configure("Detail.TFrame", background=colors["detail"], borderwidth=1,
+                            bordercolor=colors["glass_edge"], relief="solid")
+            style.configure("Sidebar.TFrame", background=colors["sidebar"])
+            style.configure("Header.TLabel", font=("Segoe UI", 24, "bold"),
+                            foreground=colors["fg"], background=colors["bg"])
+            style.configure("Sub.TLabel", font=("Segoe UI", 9), foreground=colors["muted"],
+                            background=colors["bg"])
+            style.configure("Treeview", font=("Segoe UI", 10), rowheight=44,
+                            background=colors["tree"], fieldbackground=colors["tree"],
+                            foreground=colors["fg"], borderwidth=0, relief="flat")
+            style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"),
+                            background=colors["heading"], foreground=colors["muted"],
+                            relief="flat", padding=(12, 12))
+            style.configure("TCombobox", padding=(11, 10), fieldbackground=colors["input"],
+                            background=colors["input"], foreground=colors["fg"], borderwidth=1,
+                            arrowsize=14)
+            style.configure("TEntry", padding=(12, 10), fieldbackground=colors["input"],
+                            foreground=colors["fg"], borderwidth=1)
+            style.configure("Dock.TFrame", background=colors["glass"], borderwidth=1,
+                            bordercolor=colors["glass_highlight"], relief="solid")
+            style.configure("Dock.TButton", font=(self.icon_font[0], 17), padding=(16, 8),
+                            background=colors["glass"], foreground=colors["muted"],
+                            borderwidth=1, bordercolor=colors["glass_edge"], relief="flat")
+            style.map("Dock.TButton", background=[("active", colors["hover"]), ("pressed", colors["selected"])],
+                      foreground=[("active", colors["accent"])])
+            style.configure("DockActive.TButton", font=(self.icon_font[0], 17), padding=(16, 8),
+                            background=colors["accent_soft"], foreground=colors["accent"],
+                            borderwidth=1, bordercolor=colors["glass_highlight"], relief="flat")
+            style.map("DockActive.TButton", background=[("active", colors["accent_soft"])],
+                      foreground=[("active", colors["accent"])])
         self.root.configure(bg=colors["bg"])
         if hasattr(self, "logo"):
-            self.logo.configure(bg=colors["accent"])
+            if self.theme_var.get() == "iOS 27 · Liquid Glass":
+                self.logo.configure(bg=colors["accent_soft"], fg=colors["accent"],
+                                    font=(self.icon_font[0], 20), padx=14, pady=9)
+            else:
+                self.logo.configure(bg=colors["accent"], fg="#ffffff",
+                                    font=(self.icon_font[0], 19), padx=12, pady=8)
         self._set_native_titlebar_theme()
         if self.description is not None:
-            self.description.configure(bg=colors["detail"], fg=colors["text_fg"], insertbackground=colors["text_fg"])
+            glass_mode = self.theme_var.get() == "iOS 27 · Liquid Glass"
+            self.description.configure(
+                bg=colors["detail"], fg=colors["text_fg"], insertbackground=colors["text_fg"],
+                highlightthickness=1 if glass_mode else 0,
+                highlightbackground=colors.get("glass_edge", colors["border"]),
+                highlightcolor=colors["accent"],
+            )
         if hasattr(self, "nav_buttons"):
             self._update_nav_state()
+        if hasattr(self, "ios_dock"):
+            self._apply_theme_layout()
 
     def _change_theme(self, value: str):
         if value not in THEMES:
             return
         self.theme_var.set(value)
         self._style()
+        self._apply_theme_layout()
         self._save_settings()
+
+    def _apply_theme_layout(self):
+        """Switch between the existing sidebar layout and the Liquid Glass dock."""
+        if not hasattr(self, "sidebar") or not hasattr(self, "ios_dock"):
+            return
+        if self.compact_mode:
+            self.ios_dock.pack_forget()
+            return
+
+        if self.theme_var.get() == "iOS 27 · Liquid Glass":
+            self.sidebar.pack_forget()
+            self.main_content.pack_configure(padx=(0, 0))
+            self.outer.configure(padding=(22, 16, 22, 14))
+            if not self.ios_dock.winfo_manager():
+                self.ios_dock.pack(fill="x", pady=(12, 1))
+            self.root.geometry("1080x820")
+            self.root.minsize(820, 620)
+        else:
+            self.ios_dock.pack_forget()
+            if not self.sidebar.winfo_manager():
+                self.sidebar.pack(side="left", fill="y", before=self.main_content)
+            self.main_content.pack_configure(padx=(12, 0))
+            self.outer.configure(padding=(18, 14, 18, 14))
+            self.root.geometry("980x760")
+            self.root.minsize(760, 560)
 
     def _open_github_repo(self):
         try:
@@ -1172,6 +1276,20 @@ try {
         self.compact_favorite_button = self._icon_button(self.compact_bar, GLYPHS["favorite"], "Добавить в избранное", self._toggle_favorite)
         self.compact_favorite_button.pack(side="left", padx=(0, 3))
         self._icon_button(self.compact_bar, GLYPHS["expand"], "Развернуть окно", lambda: self._set_compact_mode(False)).pack(side="right")
+
+        # Horizontal floating dock used only by the separate Liquid Glass theme.
+        self.ios_dock = ttk.Frame(self.outer, style="Dock.TFrame", padding=(10, 7))
+        self.ios_nav_buttons = {}
+        dock_actions = (
+            ("all", GLYPHS["home"], "Все новости", lambda: self._select_navigation_filter(ALL_FEEDS)),
+            ("favorites", GLYPHS["favorite"], "Избранное", lambda: self._select_navigation_filter(FAVORITES_FILTER)),
+            ("sources", GLYPHS["sources"], "Готовые источники", self._add_presets),
+            ("settings", GLYPHS["settings"], "Настройки", self._open_settings),
+        )
+        for key, glyph, tooltip, command in dock_actions:
+            button = self._icon_button(self.ios_dock, glyph, tooltip, command, "Dock.TButton", 7)
+            button.pack(side="left", fill="x", expand=True, padx=5)
+            self.ios_nav_buttons[key] = button
         self._update_nav_state()
 
     def _select_navigation_filter(self, selection: str):
@@ -1186,6 +1304,12 @@ try {
         active = "favorites" if selected == FAVORITES_FILTER else ("all" if selected == ALL_FEEDS else None)
         for key, button in self.nav_buttons.items():
             style_name = "NavActive.TButton" if key == active else "Nav.TButton"
+            try:
+                button.configure(style=style_name)
+            except tk.TclError:
+                pass
+        for key, button in getattr(self, "ios_nav_buttons", {}).items():
+            style_name = "DockActive.TButton" if key == active else "Dock.TButton"
             try:
                 button.configure(style=style_name)
             except tk.TclError:
@@ -1219,6 +1343,7 @@ try {
             self.tree.configure(show="tree headings", displaycolumns=("feed", "date"))
             self.root.geometry("980x760")
             self.root.minsize(760, 560)
+        self._apply_theme_layout()
         self._render_articles()
         if save:
             self._save_settings()

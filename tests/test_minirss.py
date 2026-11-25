@@ -51,6 +51,19 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(items[0]["link"], "https://example.com/a")
 
 
+class ThemeAndPresetTests(unittest.TestCase):
+    def test_liquid_glass_theme_is_separate_from_existing_themes(self):
+        self.assertIn("iOS 27 · Liquid Glass", mini_rss.THEMES)
+        self.assertEqual(mini_rss.THEMES["Светлая"]["bg"], "#f3f5fa")
+        self.assertEqual(mini_rss.THEMES["Тёмная"]["bg"], "#191d25")
+
+    def test_requested_technology_sources_are_presets(self):
+        by_title = {feed["title"]: feed["url"] for feed in mini_rss.PRESET_FEEDS}
+        self.assertIn("Rozetked · Google Новости", by_title)
+        self.assertIn("iGuides · Google Новости", by_title)
+        self.assertEqual(by_title["4PDA"], "https://4pda.to/feed/")
+
+
 class GithubUpdateTests(unittest.TestCase):
     def test_normalize_repo(self):
         self.assertEqual(mini_rss.normalize_github_repo("https://github.com/owner/project/"), "owner/project")
