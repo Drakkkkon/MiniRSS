@@ -690,9 +690,9 @@ class MiniRSSApp:
         width, height = widget.winfo_width(), widget.winfo_height()
         if width < 20 or height < 20:
             return
+        palette = self._palette()
         cache_key = (width, height, self.glass_appearance_var.get(), self.glass_effect_var.get())
         if self._glass_surface_sizes.get(key) != cache_key:
-            palette = self._palette()
             dark = self.glass_appearance_var.get() == "Тёмная"
             transparent = self.glass_effect_var.get() == "Прозрачный"
             image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -876,6 +876,24 @@ class MiniRSSApp:
         canvas_size = 64
         image = Image.new("RGBA", (canvas_size * scale, canvas_size * scale), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
+
+        def xy(value):
+            return int(round(value * scale))
+
+        def line(points, width=4):
+            draw.line([(xy(x), xy(y)) for x, y in points], fill=color,
+                      width=xy(width), joint="curve")
+
+        def ellipse(bounds, width=4, fill=None):
+            box = tuple(xy(v) for v in bounds)
+            draw.ellipse(box, outline=color if fill is None else None,
+                         fill=fill, width=xy(width))
+
+        def rounded(bounds, radius=7, width=4, fill=None):
+            box = tuple(xy(v) for v in bounds)
+            draw.rounded_rectangle(box, radius=xy(radius),
+                                   outline=color if fill is None else None,
+                                   fill=fill, width=xy(width))
         if tile:
             palette = self._palette()
             dark = self.glass_appearance_var.get() == "Тёмная"
@@ -908,23 +926,6 @@ class MiniRSSApp:
             draw.line((xy(16), xy(6), xy(48), xy(6)),
                       fill=(255, 255, 255, 95), width=xy(1))
 
-        def xy(value):
-            return int(round(value * scale))
-
-        def line(points, width=4):
-            draw.line([(xy(x), xy(y)) for x, y in points], fill=color,
-                      width=xy(width), joint="curve")
-
-        def ellipse(bounds, width=4, fill=None):
-            box = tuple(xy(v) for v in bounds)
-            draw.ellipse(box, outline=color if fill is None else None,
-                         fill=fill, width=xy(width))
-
-        def rounded(bounds, radius=7, width=4, fill=None):
-            box = tuple(xy(v) for v in bounds)
-            draw.rounded_rectangle(box, radius=xy(radius),
-                                   outline=color if fill is None else None,
-                                   fill=fill, width=xy(width))
 
         if name == "rss":
             ellipse((12, 44, 20, 52), fill=color)
