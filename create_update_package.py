@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sys
 import zipfile
 from pathlib import Path
 
@@ -12,6 +13,11 @@ RELEASE_DIR = ROOT / "release"
 
 
 def main() -> int:
+    # GitHub Actions Windows runners may default to cp1252; keep Russian messages safe.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
     if not EXE_SOURCE.exists():
         print("Не найден dist\\MiniRSS.exe. Сначала запустите build_exe.bat.")
         return 1
