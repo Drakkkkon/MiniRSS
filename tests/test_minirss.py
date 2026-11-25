@@ -77,6 +77,7 @@ class ThemeAndPresetTests(unittest.TestCase):
         self.assertIn("'/ALLUSERS'", script)
         self.assertIn("'/CURRENTUSER'", script)
         self.assertIn("update.log", script)
+        self.assertIn("InstallMode=$installMode", script)
         self.assertIn("Installer exit code", script)
 
     def test_glass_dark_palette_contains_required_surface_colors(self):
@@ -84,7 +85,7 @@ class ThemeAndPresetTests(unittest.TestCase):
         self.assertIn("glass", mini_rss.GLASS_DARK_THEME)
         self.assertIn("glass_edge", mini_rss.GLASS_DARK_THEME)
         self.assertIn("glass_highlight", mini_rss.GLASS_DARK_THEME)
-        self.assertEqual(mini_rss.APP_VERSION, "1.4.5")
+        self.assertEqual(mini_rss.APP_VERSION, "1.4.6")
 
     def test_requested_technology_sources_are_presets(self):
         by_title = {feed["title"]: feed["url"] for feed in mini_rss.PRESET_FEEDS}

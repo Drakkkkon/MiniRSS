@@ -1,5 +1,5 @@
 #define MyAppName "MiniRSS"
-#define MyAppVersion "1.4.5"
+#define MyAppVersion "1.4.6"
 #define MyAppPublisher "Drakkkkon"
 #define MyAppExeName "MiniRSS.exe"
 
@@ -12,7 +12,7 @@ DefaultDirName={localappdata}\Programs\MiniRSS
 DefaultGroupName=MiniRSS
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequiredOverridesAllowed=dialog,commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64
 OutputDir=release
@@ -25,7 +25,7 @@ WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
 Uninstallable=yes
-VersionInfoVersion=1.4.5.0
+VersionInfoVersion=1.4.6.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=MiniRSS installer
 VersionInfoProductName=MiniRSS
