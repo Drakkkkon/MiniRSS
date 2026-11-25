@@ -1,44 +1,52 @@
 name: Build and publish MiniRSS for Windows
+
 on:
   push:
     tags:
       - "v*"
+
 permissions:
   contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           architecture: x64
-      - name: Extract project archive
-        shell: pwsh
-        run: Expand-Archive -LiteralPath "MiniRSS_Windows_Project_v1.3.0_upload.zip" -DestinationPath "project"
-      - name: Install, test, build and package
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Check release version
+        run: python check_release_version.py
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build Windows executable
         shell: pwsh
         run: |
-          $project = Join-Path $PWD "project/minirss_windows"
-          python -m pip install --upgrade pip
-          python -m pip install -r "$project/requirements.txt"
-          Push-Location $project
-          try {
-            python check_release_version.py
-            python -m unittest discover -s tests -v
-            python -m PyInstaller --noconfirm --clean --onefile --windowed --name MiniRSS --icon=assets/minirss.ico --add-data "assets;assets" --collect-all pystray --collect-all winotify --collect-all PIL --hidden-import winotify mini_rss.py
-            python create_update_package.py
-          } finally {
-            Pop-Location
-          }
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name MiniRSS --icon=assets/minirss.ico --add-data "assets;assets" --collect-all pystray --collect-all winotify --collect-all PIL --hidden-import winotify mini_rss.py
+
+      - name: Create update package
+        run: python create_update_package.py
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: MiniRSS ${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            project/minirss_windows/release/MiniRSS_*_win64.zip
-            project/minirss_windows/release/MiniRSS_*_win64.zip.sha256
+            release/MiniRSS_*_win64.zip
+            release/MiniRSS_*_win64.zip.sha256
