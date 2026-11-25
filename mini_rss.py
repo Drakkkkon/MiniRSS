@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover - available on Windows only
     winreg = None
 
 APP_NAME = "MiniRSS"
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 REFRESH_INTERVAL_MS = 15 * 60 * 1000
 UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 REQUEST_TIMEOUT = 15
@@ -429,6 +429,149 @@ def download_update_package(update: dict) -> tuple[str, str]:
         with archive.open(exe_info, "r") as source, new_exe.open("wb") as target:
             shutil.copyfileobj(source, target)
     return folder, str(new_exe)
+
+
+def build_update_helper_script() -> str:
+    """PowerShell helper that safely installs the verified package after MiniRSS exits."""
+    return r'''param(
+    [int]$ProcessId,
+    [string]$Package,
+    [string]$Target,
+    [string]$TempDir,
+    [bool]$UseInstaller
+)
+$ErrorActionPreference = 'Stop'
+$logFolder = Join-Path $env:APPDATA 'MiniRSS'
+$log = Join-Path $logFolder 'update.log'
+try {
+    New-Item -ItemType Directory -Force -Path $logFolder | Out-Null
+} catch {}
+function Write-UpdateLog([string]$Message) {
+    try {
+        $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        Add-Content -LiteralPath $log -Value "[$stamp] $Message" -Encoding UTF8
+    } catch {}
+}
+try {
+    Write-UpdateLog "Updater started. Target=$Target Package=$Package Installer=$UseInstaller"
+    if (-not (Test-Path -LiteralPath $Package)) { throw "Файл обновления не найден: $Package" }
+    if (-not (Test-Path -LiteralPath $Target)) { throw "Не найдена установленная программа: $Target" }
+
+    # Wait for both the app PID and the PyInstaller one-file parent process.
+    $processName = [IO.Path]::GetFileNameWithoutExtension($Target)
+    $targetFullPath = [IO.Path]::GetFullPath($Target)
+    $deadline = (Get-Date).AddMinutes(3)
+    while ($true) {
+        $targetProcesses = @(
+            Get-Process -Name $processName -ErrorAction SilentlyContinue |
+            Where-Object {
+                $sameTarget = $false
+                try {
+                    $sameTarget = [string]::Equals(
+                        [IO.Path]::GetFullPath($_.Path), $targetFullPath,
+                        [StringComparison]::OrdinalIgnoreCase
+                    )
+                } catch {
+                    $sameTarget = ($_.Id -eq $ProcessId)
+                }
+                $sameTarget
+            }
+        )
+        if ($targetProcesses.Count -eq 0) { break }
+        if ((Get-Date) -gt $deadline) {
+            $ids = ($targetProcesses | ForEach-Object { $_.Id }) -join ','
+            throw "MiniRSS всё ещё запущен (PID: $ids). Закройте все окна программы и повторите обновление."
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    Start-Sleep -Seconds 2
+    Write-UpdateLog 'All MiniRSS processes have exited.'
+
+    if ($UseInstaller) {
+        $targetDir = Split-Path -Parent $targetFullPath
+        $probe = Join-Path $targetDir ('.minirss_write_test_' + [Guid]::NewGuid().ToString('N'))
+        $requiresAdmin = $false
+        try {
+            [IO.File]::WriteAllText($probe, 'test')
+            Remove-Item -LiteralPath $probe -Force
+        } catch {
+            $requiresAdmin = $true
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        }
+
+        $installMode = if ($requiresAdmin) { '/ALLUSERS' } else { '/CURRENTUSER' }
+        $quotedDir = $targetDir.Replace('"', '')
+        $argumentLine = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CLOSEAPPLICATIONS ' +
+                        $installMode + ' /DIR="' + $quotedDir + '"'
+        Write-UpdateLog "Launching Inno Setup. ElevationRequired=$requiresAdmin InstallMode=$installMode Dir=$targetDir"
+
+        $startArgs = @{
+            FilePath = $Package
+            ArgumentList = $argumentLine
+            PassThru = $true
+            Wait = $true
+            WorkingDirectory = $TempDir
+        }
+        if ($requiresAdmin) { $startArgs.Verb = 'RunAs' }
+        $installer = Start-Process @startArgs
+        Write-UpdateLog "Installer exit code: $($installer.ExitCode)"
+        if ($installer.ExitCode -ne 0) {
+            throw "Установщик завершился с кодом $($installer.ExitCode). Подробности: $log"
+        }
+        if (-not (Test-Path -LiteralPath $targetFullPath)) {
+            throw 'После установки не найден MiniRSS.exe в исходной папке приложения.'
+        }
+        $installedSize = (Get-Item -LiteralPath $targetFullPath).Length
+        if ($installedSize -lt 100000) { throw 'После установки размер MiniRSS.exe выглядит некорректным.' }
+        Write-UpdateLog "Installer finished. New executable size=$installedSize"
+
+        $newProcess = Start-Process -FilePath $targetFullPath -WorkingDirectory $targetDir -PassThru
+        Start-Sleep -Seconds 6
+        $newProcess.Refresh()
+        if ($newProcess.HasExited) {
+            throw "Новая версия MiniRSS завершилась сразу после запуска (код $($newProcess.ExitCode))."
+        }
+        Write-UpdateLog "Updated MiniRSS launched. PID=$($newProcess.Id)"
+    } else {
+        # Compatibility path for older releases that only publish a ZIP with MiniRSS.exe.
+        $backup = "$targetFullPath.bak"
+        $staged = "$targetFullPath.update"
+        $replaced = $false
+        for ($attempt = 0; $attempt -lt 60; $attempt++) {
+            try {
+                Copy-Item -LiteralPath $Package -Destination $staged -Force
+                if ((Get-Item -LiteralPath $staged).Length -lt 100000) {
+                    throw 'Размер нового MiniRSS.exe выглядит некорректным.'
+                }
+                if (Test-Path -LiteralPath $targetFullPath) {
+                    Copy-Item -LiteralPath $targetFullPath -Destination $backup -Force
+                }
+                Move-Item -LiteralPath $staged -Destination $targetFullPath -Force
+                $replaced = $true
+                break
+            } catch {
+                Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 1
+            }
+        }
+        if (-not $replaced) { throw 'Не удалось заменить MiniRSS.exe: файл всё ещё занят или папка защищена.' }
+        Write-UpdateLog 'Legacy ZIP executable replaced.'
+        Start-Process -FilePath $targetFullPath -WorkingDirectory (Split-Path -Parent $targetFullPath) | Out-Null
+        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
+    }
+
+    Write-UpdateLog 'Update completed successfully.'
+    Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+} catch {
+    $details = $_ | Out-String
+    Write-UpdateLog "UPDATE FAILED: $details"
+    Add-Type -AssemblyName PresentationFramework
+    [System.Windows.MessageBox]::Show(
+        ('Не удалось обновить MiniRSS.' + [Environment]::NewLine + [Environment]::NewLine +
+         $_.Exception.Message + [Environment]::NewLine + [Environment]::NewLine + 'Журнал: ' + $log),
+        'Обновление MiniRSS'
+    ) | Out-Null
+}'''
 
 
 def autostart_command() -> str:
@@ -1608,89 +1751,21 @@ class MiniRSSApp:
         target_exe = str(Path(sys.executable).resolve())
         helper_path = Path(temp_folder) / "apply_update.ps1"
         use_installer = Path(package_path).name.lower().startswith("minirss_setup")
-        helper_script = r'''param(
-    [int]$ProcessId,
-    [string]$Package,
-    [string]$Target,
-    [string]$TempDir,
-    [bool]$UseInstaller
-)
-$ErrorActionPreference = 'Stop'
-$logFolder = Join-Path $env:APPDATA 'MiniRSS'
-$log = Join-Path $logFolder 'update.log'
-try {
-    # Wait for the Python process and the PyInstaller one-file bootloader to release the EXE.
-    $deadline = (Get-Date).AddSeconds(90)
-    while (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
-        if ((Get-Date) -gt $deadline) { throw 'MiniRSS не завершил работу за 90 секунд.' }
-        Start-Sleep -Milliseconds 500
-    }
-    Start-Sleep -Seconds 2
-
-    if ($UseInstaller) {
-        $targetDir = Split-Path -Parent $Target
-        $argumentLine = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR="' + $targetDir + '"'
-        $installer = Start-Process -FilePath $Package -ArgumentList $argumentLine -PassThru -Wait
-        if ($installer.ExitCode -ne 0) {
-            throw "Установщик завершился с кодом $($installer.ExitCode)."
-        }
-        if (-not (Test-Path -LiteralPath $Target)) {
-            throw 'После установки не найден MiniRSS.exe в папке приложения.'
-        }
-        Start-Process -FilePath $Target -WorkingDirectory $targetDir | Out-Null
-    } else {
-        # Legacy ZIP update. Retry because the one-file parent can briefly keep
-        # the executable image mapped after the Python child process exits.
-        $backup = "$Target.bak"
-        $staged = "$Target.update"
-        $replaced = $false
-        for ($attempt = 0; $attempt -lt 60; $attempt++) {
-            try {
-                Copy-Item -LiteralPath $Package -Destination $staged -Force
-                if ((Get-Item -LiteralPath $staged).Length -lt 100000) {
-                    throw 'Размер нового MiniRSS.exe выглядит некорректным.'
-                }
-                if (Test-Path -LiteralPath $Target) {
-                    Copy-Item -LiteralPath $Target -Destination $backup -Force
-                }
-                Move-Item -LiteralPath $staged -Destination $Target -Force
-                $replaced = $true
-                break
-            } catch {
-                Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 1
-            }
-        }
-        if (-not $replaced) { throw 'Не удалось заменить MiniRSS.exe: файл всё ещё занят другим процессом.' }
-        Start-Process -FilePath $Target -WorkingDirectory (Split-Path -Parent $Target) | Out-Null
-        Start-Sleep -Seconds 2
-        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
-    }
-
-    Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
-} catch {
-    $_ | Out-String | Set-Content -LiteralPath $log -Encoding UTF8
-    Add-Type -AssemblyName PresentationFramework
-    [System.Windows.MessageBox]::Show(
-        "Не удалось установить обновление MiniRSS.`n`n$($_.Exception.Message)`n`nСведения: $log",
-        'Обновление MiniRSS'
-    ) | Out-Null
-}'''
-        helper_path.write_text(helper_script, encoding="utf-8-sig")
+        helper_path.write_text(build_update_helper_script(), encoding="utf-8-sig")
         creation_flags = (
-            getattr(subprocess, "DETACHED_PROCESS", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
         subprocess.Popen(
-            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(helper_path),
-             "-ProcessId", str(os.getpid()), "-Package", package_path, "-Target", target_exe,
-             "-TempDir", temp_folder, "-UseInstaller", str(use_installer)],
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(helper_path), "-ProcessId", str(os.getpid()), "-Package", package_path,
+             "-Target", target_exe, "-TempDir", temp_folder, "-UseInstaller", str(use_installer)],
             creationflags=creation_flags,
             close_fds=True,
         )
-        self.status_var.set("Обновление подготовлено. MiniRSS закроется и запустит установщик…")
+        self.status_var.set("Обновление подготовлено. Дождитесь завершения установки…")
         self.root.after(500, self._exit_app)
+
 
     # ---------------------------------- UI -----------------------------------
     def _build_ui(self):

@@ -70,12 +70,21 @@ class ThemeAndPresetTests(unittest.TestCase):
         self.assertIn("settings", mini_rss.GLYPHS)
         self.assertIn("favorite_filled", mini_rss.GLYPHS)
 
+    def test_update_helper_handles_elevation_and_waits_for_app_processes(self):
+        script = mini_rss.build_update_helper_script()
+        self.assertIn("Get-Process -Name $processName", script)
+        self.assertIn("Verb = 'RunAs'", script)
+        self.assertIn("'/ALLUSERS'", script)
+        self.assertIn("'/CURRENTUSER'", script)
+        self.assertIn("update.log", script)
+        self.assertIn("Installer exit code", script)
+
     def test_glass_dark_palette_contains_required_surface_colors(self):
         self.assertIn("bg", mini_rss.GLASS_DARK_THEME)
         self.assertIn("glass", mini_rss.GLASS_DARK_THEME)
         self.assertIn("glass_edge", mini_rss.GLASS_DARK_THEME)
         self.assertIn("glass_highlight", mini_rss.GLASS_DARK_THEME)
-        self.assertEqual(mini_rss.APP_VERSION, "1.4.4")
+        self.assertEqual(mini_rss.APP_VERSION, "1.4.5")
 
     def test_requested_technology_sources_are_presets(self):
         by_title = {feed["title"]: feed["url"] for feed in mini_rss.PRESET_FEEDS}
