@@ -660,16 +660,25 @@ class MiniRSSApp:
                 hwnd, 33, ctypes.byref(corners), ctypes.sizeof(corners)
             )
 
+            def colorref(value):
+                value = value.lstrip("#")
+                red, green, blue = (int(value[i:i + 2], 16) for i in (0, 2, 4))
+                return red | (green << 8) | (blue << 16)
+
             if glass_mode:
                 palette = self._palette()
-                def colorref(value):
-                    value = value.lstrip("#")
-                    red, green, blue = (int(value[i:i + 2], 16) for i in (0, 2, 4))
-                    return red | (green << 8) | (blue << 16)
-                for attribute, color in (
+                native_colors = (
                     (34, palette["glass_edge"]), (35, palette["bg"]), (36, palette["fg"])
-                ):
+                )
+                for attribute, color in native_colors:
                     native_color = ctypes.c_int(colorref(color))
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, attribute, ctypes.byref(native_color), ctypes.sizeof(native_color)
+                    )
+            else:
+                # Restore Windows defaults so changing themes never leaves a tinted title bar behind.
+                for attribute in (34, 35, 36):
+                    native_color = ctypes.c_uint(0xFFFFFFFF)
                     ctypes.windll.dwmapi.DwmSetWindowAttribute(
                         hwnd, attribute, ctypes.byref(native_color), ctypes.sizeof(native_color)
                     )
