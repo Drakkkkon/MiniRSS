@@ -19,6 +19,7 @@ import create_update_package  # noqa: E402
 class FakeResponse:
     def __init__(self, payload: bytes):
         self.payload = payload
+        self.offset = 0
 
     def __enter__(self):
         return self
@@ -26,8 +27,12 @@ class FakeResponse:
     def __exit__(self, *_args):
         return False
 
-    def read(self, _size=-1):
-        return self.payload
+    def read(self, size=-1):
+        if size is None or size < 0:
+            size = len(self.payload) - self.offset
+        chunk = self.payload[self.offset:self.offset + size]
+        self.offset += len(chunk)
+        return chunk
 
 
 class FeedTests(unittest.TestCase):
@@ -77,6 +82,46 @@ class GithubUpdateTests(unittest.TestCase):
         self.assertEqual(mini_rss.normalize_github_repo("https://github.com/owner/project/"), "owner/project")
         with self.assertRaises(ValueError):
             mini_rss.normalize_github_repo("owner/project/extra")
+
+    def test_fetch_release_prefers_verified_setup_installer(self):
+        digest = "b" * 64
+        release_payload = {
+            "tag_name": "v4.5.6",
+            "body": "Installer-based update",
+            "html_url": "https://github.com/owner/project/releases/tag/v4.5.6",
+            "assets": [
+                {"name": "MiniRSS_4.5.6_win64.zip", "size": 123456,
+                 "browser_download_url": "https://github.com/owner/project/releases/download/v4.5.6/MiniRSS_4.5.6_win64.zip"},
+                {"name": "MiniRSS_4.5.6_win64.zip.sha256", "size": 90,
+                 "browser_download_url": "https://github.com/owner/project/releases/download/v4.5.6/MiniRSS_4.5.6_win64.zip.sha256"},
+                {"name": "MiniRSS_Setup_4.5.6_x64.exe", "size": 456789,
+                 "browser_download_url": "https://github.com/owner/project/releases/download/v4.5.6/MiniRSS_Setup_4.5.6_x64.exe"},
+                {"name": "MiniRSS_Setup_4.5.6_x64.exe.sha256", "size": 90,
+                 "browser_download_url": "https://github.com/owner/project/releases/download/v4.5.6/MiniRSS_Setup_4.5.6_x64.exe.sha256"},
+            ],
+        }
+        with patch.object(mini_rss, "urlopen", side_effect=[
+            FakeResponse(json.dumps(release_payload).encode()),
+            FakeResponse(f"{digest}  MiniRSS_Setup_4.5.6_x64.exe\\n".encode()),
+        ]):
+            release = mini_rss.fetch_github_release("owner/project")
+        self.assertEqual(release["asset_type"], "installer")
+        self.assertEqual(release["sha256"], digest)
+        self.assertTrue(release["download_url"].endswith("MiniRSS_Setup_4.5.6_x64.exe"))
+
+    def test_download_update_installer_and_verify_checksum(self):
+        import hashlib
+        payload = b"MZ" + b"x" * 120_000
+        update = {
+            "asset_type": "installer",
+            "download_url": "https://github.com/owner/project/releases/download/v1/MiniRSS_Setup.exe",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        with patch.object(mini_rss, "urlopen", return_value=FakeResponse(payload)):
+            folder, installer_path = mini_rss.download_update_package(update)
+        self.assertTrue(Path(installer_path).name.endswith(".exe"))
+        self.assertEqual(Path(installer_path).read_bytes(), payload)
+        self.assertTrue(Path(folder).is_dir())
 
     def test_fetch_release_and_checksum(self):
         digest = "a" * 64

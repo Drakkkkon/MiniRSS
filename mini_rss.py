@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover - available on Windows only
     winreg = None
 
 APP_NAME = "MiniRSS"
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 REFRESH_INTERVAL_MS = 15 * 60 * 1000
 UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 REQUEST_TIMEOUT = 15
@@ -333,16 +333,28 @@ def fetch_github_release(repository: str) -> dict:
     assets = release.get("assets", [])
     if not isinstance(assets, list):
         raise ValueError("GitHub Release вернул некорректный список файлов.")
-    archive_name = f"MiniRSS_{version}_win64.zip"
-    archive_asset = next((a for a in assets if a.get("name") == archive_name), None)
-    checksum_asset = next((a for a in assets if a.get("name") == archive_name + ".sha256"), None)
-    if not archive_asset:
-        raise ValueError(f"В релизе {tag} не найден файл {archive_name}.")
-    if not checksum_asset:
-        raise ValueError(f"В релизе {tag} не найден файл {archive_name}.sha256. Пересоберите релиз из актуального проекта.")
-    download_url = str(archive_asset.get("browser_download_url", "")).strip()
+    # Prefer the signed installer: Inno Setup handles locked files and reinstalls
+    # over the existing application directory. Older releases remain supported
+    # through the verified ZIP/EXE path below.
+    installer_name = f"MiniRSS_Setup_{version}_x64.exe"
+    installer_asset = next((a for a in assets if a.get("name") == installer_name), None)
+    installer_checksum = next((a for a in assets if a.get("name") == installer_name + ".sha256"), None)
+    if installer_asset and installer_checksum:
+        selected_asset = installer_asset
+        checksum_asset = installer_checksum
+        asset_type = "installer"
+    else:
+        archive_name = f"MiniRSS_{version}_win64.zip"
+        selected_asset = next((a for a in assets if a.get("name") == archive_name), None)
+        checksum_asset = next((a for a in assets if a.get("name") == archive_name + ".sha256"), None)
+        asset_type = "zip"
+        if not selected_asset:
+            raise ValueError(f"В релизе {tag} не найден установщик или архив обновления MiniRSS.")
+        if not checksum_asset:
+            raise ValueError(f"В релизе {tag} отсутствует SHA-256 для пакета обновления.")
+    download_url = str(selected_asset.get("browser_download_url", "")).strip()
     checksum_url = str(checksum_asset.get("browser_download_url", "")).strip()
-    if int(archive_asset.get("size", 0) or 0) > MAX_UPDATE_BYTES:
+    if int(selected_asset.get("size", 0) or 0) > MAX_UPDATE_BYTES:
         raise ValueError("Пакет обновления больше допустимого лимита 120 МБ.")
     checksum_text = _read_https_text(checksum_url, limit=4096)
     match = re.search(r"(?i)\b([a-f0-9]{64})\b", checksum_text)
@@ -352,6 +364,8 @@ def fetch_github_release(repository: str) -> dict:
         "version": version,
         "download_url": download_url,
         "sha256": match.group(1).lower(),
+        "asset_type": asset_type,
+        "asset_name": str(selected_asset.get("name", "")),
         "notes": str(release.get("body", ""))[:2000],
         "html_url": str(release.get("html_url", "")),
         "tag_name": tag,
@@ -359,36 +373,47 @@ def fetch_github_release(repository: str) -> dict:
 
 
 def download_update_package(update: dict) -> tuple[str, str]:
-    """Download and verify the update, returning (temporary folder, new exe path)."""
+    """Download and verify an installer or legacy ZIP, returning its temporary path."""
     parsed_download = urlparse(str(update.get("download_url", "")))
     if parsed_download.scheme != "https" or not parsed_download.netloc:
         raise ValueError("Пакет обновления можно скачивать только по HTTPS.")
+    asset_type = update.get("asset_type", "zip")
+    if asset_type not in ("installer", "zip"):
+        raise ValueError("Релиз содержит неизвестный формат обновления.")
     folder = tempfile.mkdtemp(prefix="MiniRSS_update_")
-    archive_path = Path(folder) / "update.zip"
+    package_path = Path(folder) / ("MiniRSS_Setup.exe" if asset_type == "installer" else "update.zip")
     request = Request(update["download_url"], headers={"User-Agent": f"MiniRSS/{APP_VERSION}"})
     digest = hashlib.sha256()
     total = 0
-    with urlopen(request, timeout=UPDATE_TIMEOUT) as response, archive_path.open("wb") as output:
+    with urlopen(request, timeout=UPDATE_TIMEOUT) as response, package_path.open("wb") as output:
         while True:
             chunk = response.read(1024 * 1024)
             if not chunk:
                 break
             total += len(chunk)
             if total > MAX_UPDATE_BYTES:
-                raise ValueError("Пакет обновления превышает лимит 120 МБ")
+                raise ValueError("Пакет обновления превышает лимит 120 МБ.")
             digest.update(chunk)
             output.write(chunk)
-    if digest.hexdigest().lower() != update["sha256"]:
-        raise ValueError("Контрольная сумма пакета не совпадает. Обновление отменено")
+    if digest.hexdigest().lower() != str(update.get("sha256", "")).lower():
+        raise ValueError("Контрольная сумма пакета не совпадает. Обновление отменено.")
+
+    if asset_type == "installer":
+        if package_path.stat().st_size < 100_000:
+            raise ValueError("Размер установщика MiniRSS выглядит некорректным.")
+        with package_path.open("rb") as source:
+            if source.read(2) != b"MZ":
+                raise ValueError("Скачанный установщик не является Windows EXE-файлом.")
+        return folder, str(package_path)
 
     new_exe = Path(folder) / "MiniRSS.exe"
-    with zipfile.ZipFile(archive_path, "r") as archive:
+    with zipfile.ZipFile(package_path, "r") as archive:
         candidates = [info for info in archive.infolist() if Path(info.filename).name.lower() == "minirss.exe"]
         if not candidates:
-            raise ValueError("В архиве обновления не найден MiniRSS.exe")
+            raise ValueError("В архиве обновления не найден MiniRSS.exe.")
         exe_info = candidates[0]
         if exe_info.file_size < 100_000 or exe_info.file_size > MAX_UPDATE_BYTES:
-            raise ValueError("Размер MiniRSS.exe в пакете выглядит некорректным")
+            raise ValueError("Размер MiniRSS.exe в пакете выглядит некорректным.")
         with archive.open(exe_info, "r") as source, new_exe.open("wb") as target:
             shutil.copyfileobj(source, target)
     return folder, str(new_exe)
@@ -1353,44 +1378,92 @@ class MiniRSSApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _launch_update_helper(self, temp_folder: str, new_exe: str):
+    def _launch_update_helper(self, temp_folder: str, package_path: str):
         target_exe = str(Path(sys.executable).resolve())
         helper_path = Path(temp_folder) / "apply_update.ps1"
-        helper_script = r'''param([int]$ProcessId, [string]$Source, [string]$Target, [string]$TempDir)
+        use_installer = Path(package_path).name.lower().startswith("minirss_setup")
+        helper_script = r'''param(
+    [int]$ProcessId,
+    [string]$Package,
+    [string]$Target,
+    [string]$TempDir,
+    [bool]$UseInstaller
+)
 $ErrorActionPreference = 'Stop'
-$log = Join-Path $TempDir 'update.log'
+$logFolder = Join-Path $env:APPDATA 'MiniRSS'
+$log = Join-Path $logFolder 'update.log'
 try {
-    while (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) { Start-Sleep -Milliseconds 500 }
-    $backup = "$Target.bak"
-    if (Test-Path -LiteralPath $Target) { Copy-Item -LiteralPath $Target -Destination $backup -Force }
-    try {
-        Copy-Item -LiteralPath $Source -Destination $Target -Force
-        if ((Get-Item -LiteralPath $Target).Length -lt 100000) { throw 'Проверка размера нового файла не пройдена.' }
-        $newProcess = Start-Process -FilePath $Target -WorkingDirectory (Split-Path -Parent $Target) -PassThru
-        Start-Sleep -Seconds 5
-        $newProcess.Refresh()
-        if ($newProcess.HasExited) { throw 'Новая версия завершилась сразу после запуска. Предыдущий EXE будет восстановлен.' }
-        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
-        Start-Sleep -Seconds 2
-        Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
-    } catch {
-        if (Test-Path -LiteralPath $backup) { Copy-Item -LiteralPath $backup -Destination $Target -Force }
-        throw
+    # Wait for the Python process and the PyInstaller one-file bootloader to release the EXE.
+    $deadline = (Get-Date).AddSeconds(90)
+    while (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
+        if ((Get-Date) -gt $deadline) { throw 'MiniRSS не завершил работу за 90 секунд.' }
+        Start-Sleep -Milliseconds 500
     }
+    Start-Sleep -Seconds 2
+
+    if ($UseInstaller) {
+        $targetDir = Split-Path -Parent $Target
+        $argumentLine = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /DIR="' + $targetDir + '"'
+        $installer = Start-Process -FilePath $Package -ArgumentList $argumentLine -PassThru -Wait
+        if ($installer.ExitCode -ne 0) {
+            throw "Установщик завершился с кодом $($installer.ExitCode)."
+        }
+        if (-not (Test-Path -LiteralPath $Target)) {
+            throw 'После установки не найден MiniRSS.exe в папке приложения.'
+        }
+        Start-Process -FilePath $Target -WorkingDirectory $targetDir | Out-Null
+    } else {
+        # Legacy ZIP update. Retry because the one-file parent can briefly keep
+        # the executable image mapped after the Python child process exits.
+        $backup = "$Target.bak"
+        $staged = "$Target.update"
+        $replaced = $false
+        for ($attempt = 0; $attempt -lt 60; $attempt++) {
+            try {
+                Copy-Item -LiteralPath $Package -Destination $staged -Force
+                if ((Get-Item -LiteralPath $staged).Length -lt 100000) {
+                    throw 'Размер нового MiniRSS.exe выглядит некорректным.'
+                }
+                if (Test-Path -LiteralPath $Target) {
+                    Copy-Item -LiteralPath $Target -Destination $backup -Force
+                }
+                Move-Item -LiteralPath $staged -Destination $Target -Force
+                $replaced = $true
+                break
+            } catch {
+                Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 1
+            }
+        }
+        if (-not $replaced) { throw 'Не удалось заменить MiniRSS.exe: файл всё ещё занят другим процессом.' }
+        Start-Process -FilePath $Target -WorkingDirectory (Split-Path -Parent $Target) | Out-Null
+        Start-Sleep -Seconds 2
+        if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }
+    }
+
+    Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
 } catch {
     $_ | Out-String | Set-Content -LiteralPath $log -Encoding UTF8
     Add-Type -AssemblyName PresentationFramework
-    [System.Windows.MessageBox]::Show("Не удалось установить MiniRSS.\n\n$($_.Exception.Message)\n\nСведения: $log", 'Обновление MiniRSS') | Out-Null
+    [System.Windows.MessageBox]::Show(
+        "Не удалось установить обновление MiniRSS.`n`n$($_.Exception.Message)`n`nСведения: $log",
+        'Обновление MiniRSS'
+    ) | Out-Null
 }'''
         helper_path.write_text(helper_script, encoding="utf-8-sig")
-        creation_flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        creation_flags = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
         subprocess.Popen(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(helper_path),
-             "-ProcessId", str(os.getpid()), "-Source", new_exe, "-Target", target_exe, "-TempDir", temp_folder],
+             "-ProcessId", str(os.getpid()), "-Package", package_path, "-Target", target_exe,
+             "-TempDir", temp_folder, "-UseInstaller", str(use_installer)],
             creationflags=creation_flags,
             close_fds=True,
         )
-        self.status_var.set("Обновление подготовлено. MiniRSS перезапустится автоматически…")
+        self.status_var.set("Обновление подготовлено. MiniRSS закроется и запустит установщик…")
         self.root.after(500, self._exit_app)
 
     # ---------------------------------- UI -----------------------------------
