@@ -29,10 +29,10 @@ from tkinter import messagebox, ttk
 
 try:
     import pystray
-    from PIL import Image, ImageDraw, ImageTk
+    from PIL import Image, ImageDraw, ImageFilter, ImageTk
 except Exception:  # Pillow / tray are optional when running directly from source.
     pystray = None
-    Image = ImageDraw = ImageTk = None
+    Image = ImageDraw = ImageFilter = ImageTk = None
 
 try:
     from winotify import Notification
@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover - available on Windows only
     winreg = None
 
 APP_NAME = "MiniRSS"
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.4"
 REFRESH_INTERVAL_MS = 15 * 60 * 1000
 UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 REQUEST_TIMEOUT = 15
@@ -95,15 +95,27 @@ THEMES = {
         "sidebar": "#202630", "detail": "#202630", "accent_soft": "#2d3b60",
     },
     "iOS 27 · Liquid Glass": {
-        "bg": "#e8effb", "surface": "#f8fbff", "fg": "#1b2940", "muted": "#7889a2",
-        "accent": "#397df6", "accent_active": "#2668e9", "button": "#f9fbff",
-        "heading": "#edf3fc", "tree": "#fbfdff", "selected": "#dceaff",
-        "border": "#d1def1", "text_bg": "#f5f8ff", "text_fg": "#293a55",
-        "input": "#fbfdff", "disabled": "#a9b7cb", "hover": "#e7f0ff",
-        "sidebar": "#e7effb", "detail": "#f5f8ff", "accent_soft": "#e0ebff",
-        "glass": "#fbfdff", "glass_edge": "#cbd9ed", "glass_highlight": "#ffffff",
-        "glass_shadow": "#d2deef", "icon": "#5d6f8c",
+        "bg": "#f2f2f7", "surface": "#ffffff", "fg": "#17181d", "muted": "#858893",
+        "accent": "#1687f8", "accent_active": "#0876e6", "button": "#ffffff",
+        "heading": "#f8f8fb", "tree": "#ffffff", "selected": "#e4f1ff",
+        "border": "#e5e6ed", "text_bg": "#ffffff", "text_fg": "#252832",
+        "input": "#ffffff", "disabled": "#aeb2bd", "hover": "#edf4fd",
+        "sidebar": "#f0f1f6", "detail": "#ffffff", "accent_soft": "#e5f2ff",
+        "glass": "#ffffff", "glass_edge": "#e1e5ed", "glass_highlight": "#ffffff",
+        "glass_shadow": "#d9dce5", "icon": "#505662",
     },
+}
+
+# Dark appearance counterpart from the same iOS Liquid Glass visual language.
+GLASS_DARK_THEME = {
+    "bg": "#101820", "surface": "#24313b", "fg": "#f5f7fa", "muted": "#a9b7c3",
+    "accent": "#61b5ff", "accent_active": "#3599f4", "button": "#34434f",
+    "heading": "#2b3944", "tree": "#202d37", "selected": "#36566e",
+    "border": "#4a5a66", "text_bg": "#263540", "text_fg": "#edf3f8",
+    "input": "#354653", "disabled": "#788894", "hover": "#3b5262",
+    "sidebar": "#1e2b35", "detail": "#293943", "accent_soft": "#344f63",
+    "glass": "#394c59", "glass_edge": "#718493", "glass_highlight": "#b9cbd8",
+    "glass_shadow": "#15222b", "icon": "#e2edf5",
 }
 
 # Segoe MDL2 Assets is part of Windows 10/11 and provides crisp vector-like UI glyphs.
@@ -604,6 +616,8 @@ class MiniRSSApp:
         self.search_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Готово к работе")
         self.theme_var = tk.StringVar(value="Светлая")
+        self.glass_appearance_var = tk.StringVar(value="Светлая")
+        self.glass_effect_var = tk.StringVar(value="Однотонный")
         self.opacity_var = tk.DoubleVar(value=1.0)
         self.always_on_top_var = tk.BooleanVar(value=False)
         self.autostart_var = tk.BooleanVar(value=False)
@@ -624,6 +638,9 @@ class MiniRSSApp:
         self._tooltips: list[ToolTip] = []
         self._icon_buttons: list[ttk.Button] = []
         self._icon_images: dict[tuple, object] = {}
+        self._glass_surface_labels: dict[str, tk.Label] = {}
+        self._glass_surface_photos: dict[str, object] = {}
+        self._glass_surface_sizes: dict[str, tuple[int, int, str, str]] = {}
 
         self._load_settings()
         self._style()
@@ -646,6 +663,91 @@ class MiniRSSApp:
             self.root.after(12_000, lambda: self._check_for_updates(silent=True))
         self.root.after(UPDATE_CHECK_INTERVAL_MS, self._scheduled_update_check)
 
+    def _attach_glass_surface(self, widget, key: str):
+        if Image is None or ImageDraw is None or ImageFilter is None or ImageTk is None:
+            return
+        label = tk.Label(widget, bd=0, highlightthickness=0, bg=self._palette()["bg"])
+        label.place(x=0, y=0, relwidth=1, relheight=1)
+        label.lower()
+        self._glass_surface_labels[key] = label
+        widget.bind(
+            "<Configure>",
+            lambda _event, surface_key=key: self.root.after_idle(
+                lambda: self._render_glass_surface(surface_key)
+            ),
+            add="+",
+        )
+        self.root.after_idle(lambda: self._render_glass_surface(key))
+
+    def _render_glass_surface(self, key: str):
+        label = self._glass_surface_labels.get(key)
+        if label is None:
+            return
+        if not self._is_glass_theme():
+            label.place_forget()
+            return
+        widget = label.master
+        width, height = widget.winfo_width(), widget.winfo_height()
+        if width < 20 or height < 20:
+            return
+        cache_key = (width, height, self.glass_appearance_var.get(), self.glass_effect_var.get())
+        if self._glass_surface_sizes.get(key) != cache_key:
+            palette = self._palette()
+            dark = self.glass_appearance_var.get() == "Тёмная"
+            transparent = self.glass_effect_var.get() == "Прозрачный"
+            image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
+            shadow_draw = ImageDraw.Draw(shadow)
+            shadow_draw.rounded_rectangle(
+                (5, 7, width - 5, height - 3), radius=min(26, height // 3),
+                fill=(0, 0, 0, 44 if dark else 24)
+            )
+            image.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(7)))
+            draw = ImageDraw.Draw(image)
+            base = palette["glass"]
+            rgb = tuple(int(base[i:i + 2], 16) for i in (1, 3, 5))
+            alpha = 168 if transparent else (205 if dark else 238)
+            draw.rounded_rectangle(
+                (2, 2, width - 3, height - 5), radius=min(25, height // 3),
+                fill=(*rgb, alpha),
+                outline=(*tuple(int(palette["glass_edge"][i:i + 2], 16) for i in (1, 3, 5)),
+                         205 if transparent else 225),
+                width=1,
+            )
+            # Soft top sheen, rather than a flat border, echoes the iOS control surfaces.
+            draw.arc((5, 2, width - 7, max(18, height // 2)), 190, 350,
+                     fill=(255, 255, 255, 190 if not dark else 135), width=2)
+            draw.line((18, 4, max(19, width - 18), 4),
+                      fill=(255, 255, 255, 95 if transparent else 150), width=1)
+            photo = ImageTk.PhotoImage(image)
+            self._glass_surface_photos[key] = photo
+            self._glass_surface_sizes[key] = cache_key
+        label.configure(image=self._glass_surface_photos[key], bg=palette["bg"])
+        label.place(x=0, y=0, relwidth=1, relheight=1)
+        label.lower()
+
+    def _refresh_glass_surfaces(self):
+        for key in list(self._glass_surface_labels):
+            self._render_glass_surface(key)
+
+    def _change_glass_appearance(self, value: str):
+        if value not in ("Светлая", "Тёмная"):
+            return
+        self.glass_appearance_var.set(value)
+        self._glass_surface_sizes.clear()
+        self._icon_images.clear()
+        self._style()
+        self._save_settings()
+
+    def _change_glass_effect(self, value: str):
+        if value not in ("Прозрачный", "Однотонный"):
+            return
+        self.glass_effect_var.set(value)
+        self._glass_surface_sizes.clear()
+        self._icon_images.clear()
+        self._style()
+        self._save_settings()
+
     def _detect_icon_font(self):
         try:
             families = set(tkfont.families(self.root))
@@ -662,7 +764,7 @@ class MiniRSSApp:
             return
         try:
             hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
-            glass_mode = self.theme_var.get() == "iOS 27 · Liquid Glass"
+            glass_mode = self._is_glass_theme()
             dark_mode = self.theme_var.get() == "Тёмная"
 
             # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 on current Windows 11, 19 on older builds.
@@ -710,10 +812,47 @@ class MiniRSSApp:
         except Exception:
             pass
 
+    def _is_glass_theme(self) -> bool:
+        return self.theme_var.get() == "iOS 27 · Liquid Glass"
+
     def _palette(self):
-        colors = THEMES[self.theme_var.get()]
+        colors = dict(THEMES[self.theme_var.get()])
+        if self._is_glass_theme():
+            if self.glass_appearance_var.get() == "Тёмная":
+                colors.update(GLASS_DARK_THEME)
+            if self.glass_effect_var.get() == "Прозрачный":
+                # More visible background and cooler translucent surfaces.
+                if self.glass_appearance_var.get() == "Тёмная":
+                    colors.update({
+                        "bg": "#111f2b", "surface": "#2a3b48", "glass": "#465c6b",
+                        "glass_edge": "#829aaa", "glass_highlight": "#d5e3ec",
+                        "glass_shadow": "#14222d", "tree": "#21323e",
+                        "detail": "#304451", "input": "#405563",
+                        "heading": "#344957", "sidebar": "#1e303d",
+                        "selected": "#3f637c", "accent_soft": "#3d6079",
+                    })
+                else:
+                    colors.update({
+                        "bg": "#eaf0f8", "surface": "#f2f6fb", "glass": "#f4f8fd",
+                        "glass_edge": "#d3dfec", "glass_highlight": "#ffffff",
+                        "glass_shadow": "#d4deeb", "tree": "#f3f7fc",
+                        "detail": "#f0f5fa", "input": "#f7faff",
+                        "heading": "#edf3fa", "sidebar": "#e7eef7",
+                        "selected": "#e0efff", "accent_soft": "#e1efff",
+                    })
+            else:
+                # One-tone glass keeps the content surface calm and ordered.
+                if self.glass_appearance_var.get() == "Тёмная":
+                    colors.update({
+                        "bg": "#171b20", "surface": "#252b32", "glass": "#303740",
+                        "glass_edge": "#59636f", "glass_highlight": "#87939f",
+                        "glass_shadow": "#101419", "tree": "#21272e",
+                        "detail": "#292f37", "input": "#303740",
+                        "heading": "#303740", "sidebar": "#20262d",
+                    })
         tooltip_bg = "#242a35" if self.theme_var.get() == "Тёмная" else (
-            "#263852" if self.theme_var.get() == "iOS 27 · Liquid Glass" else "#202633"
+            "#20252c" if self._is_glass_theme() and self.glass_appearance_var.get() == "Тёмная" else
+            "#303744" if self._is_glass_theme() else "#202633"
         )
         return {**colors, "tooltip_bg": tooltip_bg, "tooltip_fg": "#ffffff"}
 
@@ -722,17 +861,52 @@ class MiniRSSApp:
             return GLYPHS[name]
         return GLYPH_FALLBACKS.get(name, "•")
 
-    def _make_icon_photo(self, name: str, color: str, size: int = 22):
+    def _make_icon_photo(self, name: str, color: str, size: int = 22,
+                         tile: bool = False, active: bool = False):
         """Draw crisp, SF-Symbol-inspired outline icons for the Liquid Glass theme."""
         if Image is None or ImageDraw is None or ImageTk is None:
             return None
-        cache_key = (name, color, size)
+        cache_key = (
+            name, color, size, tile, active,
+            self.glass_appearance_var.get(), self.glass_effect_var.get()
+        )
         if cache_key in self._icon_images:
             return self._icon_images[cache_key]
         scale = 3
         canvas_size = 64
         image = Image.new("RGBA", (canvas_size * scale, canvas_size * scale), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
+        if tile:
+            palette = self._palette()
+            dark = self.glass_appearance_var.get() == "Тёмная"
+            transparent = self.glass_effect_var.get() == "Прозрачный"
+            shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
+            shadow_draw = ImageDraw.Draw(shadow)
+            shadow_draw.rounded_rectangle(
+                (xy0 := xy(5), xy(7), xy(59), xy(61)),
+                radius=xy(19), fill=(0, 0, 0, 48 if dark else 25)
+            )
+            shadow = shadow.filter(ImageFilter.GaussianBlur(xy(3)))
+            image.alpha_composite(shadow)
+            draw = ImageDraw.Draw(image)
+            body = palette["accent_soft"] if active else palette["glass"]
+            body_rgb = tuple(int(body[i:i + 2], 16) for i in (1, 3, 5))
+            alpha = 150 if transparent else (205 if dark else 238)
+            if active:
+                alpha = min(245, alpha + 18)
+            draw.rounded_rectangle(
+                (xy(3), xy(3), xy(61), xy(61)),
+                radius=xy(19),
+                fill=(*body_rgb, alpha),
+                outline=(*tuple(int(palette["glass_edge"][i:i + 2], 16) for i in (1, 3, 5)),
+                         185 if transparent else 220),
+                width=xy(1),
+            )
+            # A thin upper reflection gives the tile a polished glass edge.
+            draw.arc((xy(5), xy(4), xy(59), xy(45)), 190, 350,
+                     fill=(255, 255, 255, 190 if not dark else 145), width=xy(2))
+            draw.line((xy(16), xy(6), xy(48), xy(6)),
+                      fill=(255, 255, 255, 95), width=xy(1))
 
         def xy(value):
             return int(round(value * scale))
@@ -838,8 +1012,10 @@ class MiniRSSApp:
         if glass_mode:
             colors = self._palette()
             style_name = str(button.cget("style"))
-            color = colors["accent"] if ("Active" in style_name or name == "favorite_filled") else colors.get("icon", colors["fg"])
-            photo = self._make_icon_photo(name, color, 24 if style_name.startswith("Dock") else 22)
+            is_active = "Active" in style_name or name == "favorite_filled"
+            color = ("#ffffff" if is_active and self.glass_appearance_var.get() == "Тёмная"
+                     else colors["accent"] if is_active else colors.get("icon", colors["fg"]))
+            photo = self._make_icon_photo(name, color, 40, tile=True, active=is_active)
             if photo is not None:
                 button.configure(text="", image=photo, compound="center")
                 button._minirss_image = photo
@@ -874,7 +1050,8 @@ class MiniRSSApp:
     # ------------------------------- Settings -------------------------------
     def _load_settings(self):
         defaults = {
-            "theme": "Светлая", "opacity": 100, "always_on_top": False, "compact": False,
+            "theme": "Светлая", "glass_appearance": "Светлая", "glass_effect": "Однотонный",
+            "opacity": 100, "always_on_top": False, "compact": False,
             "autostart": False, "notifications": True, "close_to_tray": True,
             "auto_check_updates": True, "update_manifest_url": "", "github_repo": "Drakkkkon/MiniRSS",
         }
@@ -886,6 +1063,10 @@ class MiniRSSApp:
         except (OSError, json.JSONDecodeError):
             pass
         self.theme_var.set(defaults.get("theme") if defaults.get("theme") in THEMES else "Светлая")
+        appearance = str(defaults.get("glass_appearance", "Светлая"))
+        self.glass_appearance_var.set(appearance if appearance in ("Светлая", "Тёмная") else "Светлая")
+        effect = str(defaults.get("glass_effect", "Однотонный"))
+        self.glass_effect_var.set(effect if effect in ("Прозрачный", "Однотонный") else "Однотонный")
         try:
             opacity = max(60, min(100, int(defaults.get("opacity", 100)))) / 100
         except (TypeError, ValueError):
@@ -903,6 +1084,8 @@ class MiniRSSApp:
     def _save_settings(self):
         payload = {
             "theme": self.theme_var.get(),
+            "glass_appearance": self.glass_appearance_var.get(),
+            "glass_effect": self.glass_effect_var.get(),
             "opacity": round(float(self.opacity_var.get()) * 100),
             "always_on_top": bool(self.always_on_top_var.get()),
             "compact": bool(self.compact_mode),
@@ -961,7 +1144,7 @@ class MiniRSSApp:
         self._save_settings()
 
     def _style(self):
-        colors = THEMES[self.theme_var.get()]
+        colors = self._palette()
         style = ttk.Style()
         try:
             style.theme_use("clam")
@@ -1003,11 +1186,9 @@ class MiniRSSApp:
         style.configure("TLabelframe", background=colors["bg"], foreground=colors["fg"], bordercolor=colors["border"])
         style.configure("TLabelframe.Label", background=colors["bg"], foreground=colors["fg"], font=("Segoe UI", 9, "bold"))
         style.configure("GlassHeader.TFrame", background=colors["bg"], borderwidth=0, relief="flat")
-        if self.theme_var.get() == "iOS 27 · Liquid Glass":
-            # Soft blue-white surfaces, bright edges and generous spacing evoke
-            # the layered Liquid Glass look while keeping native Windows controls.
-            # Native Windows 11 Mica plus bright, layered surfaces make the
-            # separate iOS-style theme feel like glass without replacing other themes.
+        if self._is_glass_theme():
+            # Rounded image-backed glass surfaces and iOS-like controls sit on top
+            # of a restrained neutral backdrop; all other themes keep their styling.
             style.configure("GlassHeader.TFrame", background=colors["glass"], borderwidth=1,
                             bordercolor=colors["glass_highlight"], lightcolor=colors["glass_highlight"],
                             darkcolor=colors["glass_edge"], relief="solid")
@@ -1026,11 +1207,9 @@ class MiniRSSApp:
                             relief="raised")
             style.map("Accent.TButton", background=[("active", colors["accent_active"]),
                                                        ("pressed", colors["accent"])])
-            style.configure("Icon.TButton", font=self.icon_font, padding=(9, 9), width=3,
-                            background=colors["glass"], foreground=colors["fg"],
-                            borderwidth=1, bordercolor=colors["glass_edge"],
-                            lightcolor=colors["glass_highlight"], darkcolor=colors["glass_shadow"],
-                            relief="raised")
+            style.configure("Icon.TButton", font=self.icon_font, padding=(2, 2), width=3,
+                            background=colors["bg"], foreground=colors["fg"],
+                            borderwidth=0, relief="flat")
             style.map("Icon.TButton", background=[("active", colors["glass_highlight"]),
                                                     ("pressed", colors["selected"])])
             style.configure("Card.TFrame", background=colors["surface"], borderwidth=1,
@@ -1058,27 +1237,29 @@ class MiniRSSApp:
             style.configure("TEntry", padding=(12, 10), fieldbackground=colors["input"],
                             foreground=colors["fg"], borderwidth=1, bordercolor=colors["glass_edge"])
             style.configure("TSeparator", background=colors["glass_edge"])
-            style.configure("Dock.TFrame", background=colors["glass"], borderwidth=1,
-                            bordercolor=colors["glass_highlight"], lightcolor=colors["glass_highlight"],
-                            darkcolor=colors["glass_edge"], relief="raised")
-            style.configure("Dock.TButton", font=(self.icon_font[0], 17), padding=(15, 9),
-                            background=colors["glass"], foreground=colors["icon"],
-                            borderwidth=1, bordercolor=colors["glass_edge"],
-                            lightcolor=colors["glass_highlight"], darkcolor=colors["glass_shadow"],
-                            relief="raised")
-            style.map("Dock.TButton", background=[("active", colors["glass_highlight"]),
+            style.configure("Dock.TFrame", background=colors["bg"], borderwidth=0, relief="flat")
+            style.configure("Dock.TButton", font=(self.icon_font[0], 17), padding=(2, 2),
+                            background=colors["bg"], foreground=colors["icon"],
+                            borderwidth=0, relief="flat")
+            style.map("Dock.TButton", background=[("active", colors["hover"]),
                                                     ("pressed", colors["selected"])],
                       foreground=[("active", colors["accent"])])
-            style.configure("DockActive.TButton", font=(self.icon_font[0], 17), padding=(15, 9),
-                            background=colors["accent_soft"], foreground=colors["accent"],
-                            borderwidth=1, bordercolor=colors["glass_highlight"],
-                            lightcolor=colors["glass_highlight"], darkcolor=colors["glass_edge"],
-                            relief="raised")
-            style.map("DockActive.TButton", background=[("active", colors["accent_soft"])],
+            style.configure("DockActive.TButton", font=(self.icon_font[0], 17), padding=(2, 2),
+                            background=colors["bg"], foreground=colors["accent"],
+                            borderwidth=0, relief="flat")
+            style.map("DockActive.TButton", background=[("active", colors["hover"])],
                       foreground=[("active", colors["accent"])])
+            style.configure("GlassOptions.TLabelframe", background=colors["surface"],
+                            bordercolor=colors["glass_edge"], borderwidth=1, relief="solid")
+            style.configure("GlassOptions.TLabelframe.Label", background=colors["surface"],
+                            foreground=colors["fg"], font=("Segoe UI", 9, "bold"))
+            style.configure("Glass.TRadiobutton", background=colors["surface"],
+                            foreground=colors["fg"], font=("Segoe UI", 9), padding=(5, 4))
+            style.map("Glass.TRadiobutton", background=[("active", colors["surface"])],
+                      foreground=[("selected", colors["accent"])])
         self.root.configure(bg=colors["bg"])
         if hasattr(self, "logo"):
-            if self.theme_var.get() == "iOS 27 · Liquid Glass":
+            if self._is_glass_theme():
                 self.logo.configure(bg=colors["accent_soft"], fg=colors["accent"],
                                     font=(self.icon_font[0], 20), padx=14, pady=9)
             else:
@@ -1086,7 +1267,7 @@ class MiniRSSApp:
                                     font=(self.icon_font[0], 19), padx=12, pady=8)
         self._set_native_titlebar_theme()
         if self.description is not None:
-            glass_mode = self.theme_var.get() == "iOS 27 · Liquid Glass"
+            glass_mode = self._is_glass_theme()
             self.description.configure(
                 bg=colors["detail"], fg=colors["text_fg"], insertbackground=colors["text_fg"],
                 highlightthickness=1 if glass_mode else 0,
@@ -1097,7 +1278,7 @@ class MiniRSSApp:
             self._update_nav_state()
         self._refresh_icon_buttons()
         if hasattr(self, "search_icon_label"):
-            if self.theme_var.get() == "iOS 27 · Liquid Glass":
+            if self._is_glass_theme():
                 photo = self._make_icon_photo("search", colors.get("icon", colors["fg"]), 19)
                 if photo is not None:
                     self.search_icon_label.configure(text="", image=photo)
@@ -1108,7 +1289,7 @@ class MiniRSSApp:
                 self.search_icon_label.configure(image="", text=self._glyph("search"), font=self.icon_font)
                 self.search_icon_label._minirss_image = None
         if hasattr(self, "logo"):
-            if self.theme_var.get() == "iOS 27 · Liquid Glass":
+            if self._is_glass_theme():
                 photo = self._make_icon_photo("rss", colors["accent"], 34)
                 if photo is not None:
                     self.logo.configure(image=photo, text="", bg=colors["accent_soft"],
@@ -1123,6 +1304,7 @@ class MiniRSSApp:
                 self.logo._minirss_image = None
         if hasattr(self, "ios_dock"):
             self._apply_theme_layout()
+        self._refresh_glass_surfaces()
 
     def _change_theme(self, value: str):
         if value not in THEMES:
@@ -1145,7 +1327,7 @@ class MiniRSSApp:
             self.main_content.pack_configure(padx=(0, 0))
             self.outer.configure(padding=(22, 16, 22, 14))
             if not self.ios_dock.winfo_manager():
-                self.ios_dock.pack(fill="x", pady=(12, 1))
+                self.ios_dock.pack(fill="x", pady=(14, 3), padx=160)
             self.root.geometry("1080x820")
             self.root.minsize(820, 620)
         else:
@@ -1170,7 +1352,7 @@ class MiniRSSApp:
         dialog.title("Настройки MiniRSS")
         dialog.resizable(False, True)
         dialog.transient(self.root)
-        colors = THEMES[self.theme_var.get()]
+        colors = self._palette()
         dialog.configure(bg=colors["bg"])
         frame = ttk.Frame(dialog, padding=20)
         frame.pack(fill="both", expand=True)
@@ -1180,11 +1362,47 @@ class MiniRSSApp:
 
         ttk.Label(frame, text="Оформление", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         theme_combo = ttk.Combobox(frame, state="readonly", values=list(THEMES), textvariable=self.theme_var, width=25)
-        theme_combo.pack(fill="x", pady=(5, 14))
-        theme_combo.bind("<<ComboboxSelected>>", lambda _e: (self._change_theme(self.theme_var.get()), dialog.configure(bg=THEMES[self.theme_var.get()]["bg"])))
+        theme_combo.pack(fill="x", pady=(5, 10))
+
+        glass_options = ttk.LabelFrame(frame, text="Liquid Glass", style="GlassOptions.TLabelframe",
+                                       padding=(12, 8))
+        appearance_row = ttk.Frame(glass_options, style="Card.TFrame")
+        appearance_row.pack(fill="x", pady=(0, 7))
+        ttk.Label(appearance_row, text="Внешний вид", style="Panel.TLabel").pack(side="left")
+        ttk.Radiobutton(appearance_row, text="Светлый", value="Светлая",
+                        variable=self.glass_appearance_var, style="Glass.TRadiobutton",
+                        command=lambda: self._change_glass_appearance(self.glass_appearance_var.get())).pack(side="right", padx=(8, 0))
+        ttk.Radiobutton(appearance_row, text="Тёмный", value="Тёмная",
+                        variable=self.glass_appearance_var, style="Glass.TRadiobutton",
+                        command=lambda: self._change_glass_appearance(self.glass_appearance_var.get())).pack(side="right")
+        effect_row = ttk.Frame(glass_options, style="Card.TFrame")
+        effect_row.pack(fill="x")
+        ttk.Label(effect_row, text="Эффект", style="Panel.TLabel").pack(side="left")
+        ttk.Radiobutton(effect_row, text="Прозрачный", value="Прозрачный",
+                        variable=self.glass_effect_var, style="Glass.TRadiobutton",
+                        command=lambda: self._change_glass_effect(self.glass_effect_var.get())).pack(side="right", padx=(8, 0))
+        ttk.Radiobutton(effect_row, text="Однотонный", value="Однотонный",
+                        variable=self.glass_effect_var, style="Glass.TRadiobutton",
+                        command=lambda: self._change_glass_effect(self.glass_effect_var.get())).pack(side="right")
+        ttk.Label(glass_options,
+                  text="Прозрачный показывает больше фонового слоя. Однотонный делает панели спокойнее и повышает контраст.",
+                  style="CardSub.TLabel", wraplength=430, justify="left").pack(anchor="w", pady=(8, 0))
 
         opacity_title = ttk.Frame(frame)
         opacity_title.pack(fill="x")
+
+        def update_theme_controls(_event=None):
+            self._change_theme(self.theme_var.get())
+            dialog.configure(bg=self._palette()["bg"])
+            if self._is_glass_theme():
+                if not glass_options.winfo_manager():
+                    glass_options.pack(fill="x", pady=(0, 14), before=opacity_title)
+            else:
+                glass_options.pack_forget()
+
+        theme_combo.bind("<<ComboboxSelected>>", update_theme_controls)
+        if self._is_glass_theme():
+            glass_options.pack(fill="x", pady=(0, 14), before=opacity_title)
         ttk.Label(opacity_title, text="Прозрачность окна").pack(side="left")
         opacity_label = ttk.Label(opacity_title, text=f"{round(self.opacity_var.get()*100)}%", style="Sub.TLabel")
         opacity_label.pack(side="right")
@@ -1473,10 +1691,11 @@ try {
 
         self.header = ttk.Frame(self.outer, style="GlassHeader.TFrame", padding=(16, 11))
         self.header.pack(fill="x", pady=(0, 15))
+        self._attach_glass_surface(self.header, "header")
         brand = ttk.Frame(self.header, style="GlassHeader.TFrame")
         brand.pack(side="left", fill="x", expand=True)
         self.logo = tk.Label(brand, text=self._glyph("rss"), font=(self.icon_font[0], 19),
-                             bg=THEMES[self.theme_var.get()]["accent"], fg="#ffffff", padx=12, pady=8)
+                             bg=self._palette()["accent"], fg="#ffffff", padx=12, pady=8)
         self.logo.pack(side="left", padx=(0, 11))
         title_area = ttk.Frame(brand, style="GlassHeader.TFrame")
         title_area.pack(side="left", fill="x", expand=True)
@@ -1560,12 +1779,13 @@ try {
 
         self.detail_card = ttk.Frame(self.main_content, style="Detail.TFrame", padding=(13, 11))
         self.detail_card.pack(fill="x", pady=(12, 0))
+        self._attach_glass_surface(self.detail_card, "detail")
         self.detail_title = ttk.Label(self.detail_card, text="Выберите новость", style="Detail.TLabel",
                                       font=("Segoe UI", 11, "bold"), wraplength=720)
         self.detail_title.pack(anchor="w")
         self.detail_source = ttk.Label(self.detail_card, text="", style="DetailSub.TLabel")
         self.detail_source.pack(anchor="w", pady=(2, 7))
-        colors = THEMES[self.theme_var.get()]
+        colors = self._palette()
         self.description = tk.Text(self.detail_card, height=4, wrap="word", font=("Segoe UI", 9),
                                    bg=colors["detail"], fg=colors["text_fg"], insertbackground=colors["text_fg"],
                                    relief="flat", padx=2, pady=4, state="disabled", highlightthickness=0)
@@ -1588,6 +1808,7 @@ try {
 
         # Horizontal floating dock used only by the separate Liquid Glass theme.
         self.ios_dock = ttk.Frame(self.outer, style="Dock.TFrame", padding=(10, 7))
+        self._attach_glass_surface(self.ios_dock, "dock")
         self.ios_nav_buttons = {}
         dock_actions = (
             ("all", GLYPHS["home"], "Все новости", lambda: self._select_navigation_filter(ALL_FEEDS)),

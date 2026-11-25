@@ -1,5 +1,5 @@
 #define MyAppName "MiniRSS"
-#define MyAppVersion "1.4.3"
+#define MyAppVersion "1.4.4"
 #define MyAppPublisher "Drakkkkon"
 #define MyAppExeName "MiniRSS.exe"
 
@@ -25,7 +25,7 @@ WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
 Uninstallable=yes
-VersionInfoVersion=1.4.3.0
+VersionInfoVersion=1.4.4.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=MiniRSS installer
 VersionInfoProductName=MiniRSS

@@ -70,6 +70,13 @@ class ThemeAndPresetTests(unittest.TestCase):
         self.assertIn("settings", mini_rss.GLYPHS)
         self.assertIn("favorite_filled", mini_rss.GLYPHS)
 
+    def test_glass_dark_palette_contains_required_surface_colors(self):
+        self.assertIn("bg", mini_rss.GLASS_DARK_THEME)
+        self.assertIn("glass", mini_rss.GLASS_DARK_THEME)
+        self.assertIn("glass_edge", mini_rss.GLASS_DARK_THEME)
+        self.assertIn("glass_highlight", mini_rss.GLASS_DARK_THEME)
+        self.assertEqual(mini_rss.APP_VERSION, "1.4.4")
+
     def test_requested_technology_sources_are_presets(self):
         by_title = {feed["title"]: feed["url"] for feed in mini_rss.PRESET_FEEDS}
         self.assertIn("Rozetked · Google Новости", by_title)
