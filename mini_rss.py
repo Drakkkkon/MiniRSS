@@ -901,7 +901,7 @@ class MiniRSSApp:
             shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
             shadow_draw = ImageDraw.Draw(shadow)
             shadow_draw.rounded_rectangle(
-                (xy0 := xy(5), xy(7), xy(59), xy(61)),
+                (xy(5), xy(7), xy(59), xy(61)),
                 radius=xy(19), fill=(0, 0, 0, 48 if dark else 25)
             )
             shadow = shadow.filter(ImageFilter.GaussianBlur(xy(3)))
@@ -1009,7 +1009,7 @@ class MiniRSSApp:
         name = getattr(button, "_minirss_icon_name", None)
         if not name:
             return
-        glass_mode = self.theme_var.get() == "iOS 27 · Liquid Glass"
+        glass_mode = self._is_glass_theme()
         if glass_mode:
             colors = self._palette()
             style_name = str(button.cget("style"))
@@ -1743,8 +1743,10 @@ try {
 
         self.main_content = ttk.Frame(self.main_row, style="Card.TFrame", padding=16)
         self.main_content.pack(side="left", fill="both", expand=True, padx=(12, 0))
+        self._attach_glass_surface(self.main_content, "content")
 
         self.controls = ttk.Frame(self.main_content, style="Card.TFrame")
+        self._attach_glass_surface(self.controls, "controls")
         self.controls.pack(fill="x", pady=(0, 11))
         ttk.Label(self.controls, text="Лента", style="Panel.TLabel", font=("Segoe UI", 9, "bold")).pack(side="left", padx=(0, 10))
         self.feed_combo = ttk.Combobox(self.controls, textvariable=self.filter_var, state="readonly")
@@ -1754,6 +1756,7 @@ try {
         self.remove_feed_button.pack(side="left", padx=(7, 0))
 
         self.search_frame = ttk.Frame(self.main_content, style="Card.TFrame")
+        self._attach_glass_surface(self.search_frame, "search")
         self.search_frame.pack(fill="x", pady=(0, 11))
         self.search_icon_label = ttk.Label(self.search_frame, text=self._glyph("search"),
                                            font=self.icon_font, style="Panel.TLabel")
