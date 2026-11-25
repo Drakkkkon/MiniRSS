@@ -765,7 +765,10 @@ class MiniRSSApp:
         try:
             hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
             glass_mode = self._is_glass_theme()
-            dark_mode = self.theme_var.get() == "Тёмная"
+            dark_mode = (
+                self.theme_var.get() == "Тёмная"
+                or (self._is_glass_theme() and self.glass_appearance_var.get() == "Тёмная")
+            )
 
             # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 on current Windows 11, 19 on older builds.
             dark_value = ctypes.c_int(1 if dark_mode else 0)
@@ -1018,10 +1021,13 @@ class MiniRSSApp:
                      else colors["accent"] if is_active else colors.get("icon", colors["fg"]))
             photo = self._make_icon_photo(name, color, 40, tile=True, active=is_active)
             if photo is not None:
-                button.configure(text="", image=photo, compound="center")
+                button.configure(text="", image=photo, compound="center", width=0)
                 button._minirss_image = photo
                 return
-        button.configure(image="", text=self._glyph(name), compound="center")
+        button.configure(
+            image="", text=self._glyph(name), compound="center",
+            width=getattr(button, "_minirss_width", 3)
+        )
         button._minirss_image = None
 
     def _refresh_icon_buttons(self):
@@ -1041,6 +1047,7 @@ class MiniRSSApp:
         name = next((key for key, value in GLYPHS.items() if value == glyph), None)
         display_glyph = self._glyph(name) if name else glyph
         button = ttk.Button(parent, text=display_glyph, command=command, style=style, width=width)
+        button._minirss_width = width
         if name:
             button._minirss_icon_name = name
             self._icon_buttons.append(button)
