@@ -573,7 +573,7 @@ class MiniRSSApp:
         self.close_to_tray_var = tk.BooleanVar(value=True)
         self.auto_check_updates_var = tk.BooleanVar(value=True)
         self.update_manifest_url_var = tk.StringVar(value="")  # Legacy setting retained for backward compatibility.
-        self.github_repo_var = tk.StringVar(value="")
+        self.github_repo_var = tk.StringVar(value="Drakkkkon/MiniRSS")
         self.compact_mode = False
         self.tray_icon = None
         self.tray_available = False
@@ -656,7 +656,7 @@ class MiniRSSApp:
         defaults = {
             "theme": "Светлая", "opacity": 100, "always_on_top": False, "compact": False,
             "autostart": False, "notifications": True, "close_to_tray": True,
-            "auto_check_updates": True, "update_manifest_url": "", "github_repo": "",
+            "auto_check_updates": True, "update_manifest_url": "", "github_repo": "Drakkkkon/MiniRSS",
         }
         try:
             if SETTINGS_FILE.exists():
@@ -678,7 +678,7 @@ class MiniRSSApp:
         self.close_to_tray_var.set(bool(defaults.get("close_to_tray", True)))
         self.auto_check_updates_var.set(bool(defaults.get("auto_check_updates", True)))
         self.update_manifest_url_var.set(str(defaults.get("update_manifest_url", "")))
-        self.github_repo_var.set(str(defaults.get("github_repo", "")))
+        self.github_repo_var.set(str(defaults.get("github_repo") or "Drakkkkon/MiniRSS"))
 
     def _save_settings(self):
         payload = {
