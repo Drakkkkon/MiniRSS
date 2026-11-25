@@ -57,6 +57,14 @@ class ThemeAndPresetTests(unittest.TestCase):
         self.assertEqual(mini_rss.THEMES["Светлая"]["bg"], "#f3f5fa")
         self.assertEqual(mini_rss.THEMES["Тёмная"]["bg"], "#191d25")
 
+    def test_liquid_glass_has_icon_material_palette(self):
+        palette = mini_rss.THEMES["iOS 27 · Liquid Glass"]
+        self.assertTrue(palette["glass_highlight"])
+        self.assertTrue(palette["glass_edge"])
+        self.assertTrue(palette["glass_shadow"])
+        self.assertIn("settings", mini_rss.GLYPHS)
+        self.assertIn("favorite_filled", mini_rss.GLYPHS)
+
     def test_requested_technology_sources_are_presets(self):
         by_title = {feed["title"]: feed["url"] for feed in mini_rss.PRESET_FEEDS}
         self.assertIn("Rozetked · Google Новости", by_title)

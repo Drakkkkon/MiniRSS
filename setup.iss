@@ -1,5 +1,5 @@
 #define MyAppName "MiniRSS"
-#define MyAppVersion "1.4.1"
+#define MyAppVersion "1.4.2"
 #define MyAppPublisher "Drakkkkon"
 #define MyAppExeName "MiniRSS.exe"
 

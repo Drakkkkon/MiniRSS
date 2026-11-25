@@ -29,10 +29,10 @@ from tkinter import messagebox, ttk
 
 try:
     import pystray
-    from PIL import Image, ImageDraw
-except Exception:  # Tray is optional when running directly from source.
+    from PIL import Image, ImageDraw, ImageTk
+except Exception:  # Pillow / tray are optional when running directly from source.
     pystray = None
-    Image = ImageDraw = None
+    Image = ImageDraw = ImageTk = None
 
 try:
     from winotify import Notification
@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover - available on Windows only
     winreg = None
 
 APP_NAME = "MiniRSS"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 REFRESH_INTERVAL_MS = 15 * 60 * 1000
 UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 REQUEST_TIMEOUT = 15
@@ -95,13 +95,14 @@ THEMES = {
         "sidebar": "#202630", "detail": "#202630", "accent_soft": "#2d3b60",
     },
     "iOS 27 · Liquid Glass": {
-        "bg": "#e7eefb", "surface": "#f5f8ff", "fg": "#17243a", "muted": "#71819a",
-        "accent": "#3478f6", "accent_active": "#2467e6", "button": "#f8fbff",
-        "heading": "#edf3ff", "tree": "#f8faff", "selected": "#dce9ff",
-        "border": "#d5e1f4", "text_bg": "#f3f7ff", "text_fg": "#263852",
-        "input": "#f9fbff", "disabled": "#a2b0c4", "hover": "#e7f0ff",
-        "sidebar": "#e4edfb", "detail": "#eff5ff", "accent_soft": "#dceaff",
-        "glass": "#f7faff", "glass_edge": "#d2e0f5", "glass_highlight": "#ffffff",
+        "bg": "#e8effb", "surface": "#f8fbff", "fg": "#1b2940", "muted": "#7889a2",
+        "accent": "#397df6", "accent_active": "#2668e9", "button": "#f9fbff",
+        "heading": "#edf3fc", "tree": "#fbfdff", "selected": "#dceaff",
+        "border": "#d1def1", "text_bg": "#f5f8ff", "text_fg": "#293a55",
+        "input": "#fbfdff", "disabled": "#a9b7cb", "hover": "#e7f0ff",
+        "sidebar": "#e7effb", "detail": "#f5f8ff", "accent_soft": "#e0ebff",
+        "glass": "#fbfdff", "glass_edge": "#cbd9ed", "glass_highlight": "#ffffff",
+        "glass_shadow": "#d2deef", "icon": "#5d6f8c",
     },
 }
 
@@ -596,10 +597,13 @@ class MiniRSSApp:
         self.description = None
         self.icon_font = self._detect_icon_font()
         self._tooltips: list[ToolTip] = []
+        self._icon_buttons: list[ttk.Button] = []
+        self._icon_images: dict[tuple, object] = {}
 
         self._load_settings()
         self._style()
         self._build_ui()
+        self._style()  # Apply image-based symbols to widgets created by _build_ui.
         self._apply_theme_layout()
         self._load_feeds()
         self._load_favorites()
@@ -628,26 +632,47 @@ class MiniRSSApp:
         return ("Segoe UI Symbol", 14)
 
     def _set_native_titlebar_theme(self):
-        """Ask DWM to tint the native title bar in dark mode when available."""
+        """Apply Windows 11 Mica, rounded corners and matching title-bar colors when available."""
         if sys.platform != "win32":
             return
         try:
-            # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 on current Windows 11, 19 on older builds.
             hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
-            value = ctypes.c_int(self.theme_var.get() == "Тёмная")
+            glass_mode = self.theme_var.get() == "iOS 27 · Liquid Glass"
+            dark_mode = self.theme_var.get() == "Тёмная"
+
+            # DWMWA_USE_IMMERSIVE_DARK_MODE: 20 on current Windows 11, 19 on older builds.
+            dark_value = ctypes.c_int(1 if dark_mode else 0)
             for attribute in (20, 19):
                 result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                    hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)
+                    hwnd, attribute, ctypes.byref(dark_value), ctypes.sizeof(dark_value)
                 )
                 if result == 0:
                     break
-            # Windows 11 system backdrop: a translucent Mica/Acrylic-like base
-            # for the dedicated Liquid Glass theme. Older Windows builds ignore it.
-            backdrop_value = 3 if self.theme_var.get() == "iOS 27 · Liquid Glass" else 0
-            backdrop = ctypes.c_int(backdrop_value)
+
+            # DWMSBT_MAINWINDOW (2) supplies native Mica behind the glass UI.
+            # Older Windows builds simply ignore unsupported attributes.
+            backdrop = ctypes.c_int(2 if glass_mode else 1)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
                 hwnd, 38, ctypes.byref(backdrop), ctypes.sizeof(backdrop)
             )
+            corners = ctypes.c_int(2 if glass_mode else 1)  # DWMWCP_ROUND / DEFAULT
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 33, ctypes.byref(corners), ctypes.sizeof(corners)
+            )
+
+            if glass_mode:
+                palette = self._palette()
+                def colorref(value):
+                    value = value.lstrip("#")
+                    red, green, blue = (int(value[i:i + 2], 16) for i in (0, 2, 4))
+                    return red | (green << 8) | (blue << 16)
+                for attribute, color in (
+                    (34, palette["glass_edge"]), (35, palette["bg"]), (36, palette["fg"])
+                ):
+                    native_color = ctypes.c_int(colorref(color))
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, attribute, ctypes.byref(native_color), ctypes.sizeof(native_color)
+                    )
         except Exception:
             pass
 
@@ -663,10 +688,152 @@ class MiniRSSApp:
             return GLYPHS[name]
         return GLYPH_FALLBACKS.get(name, "•")
 
+    def _make_icon_photo(self, name: str, color: str, size: int = 22):
+        """Draw crisp, SF-Symbol-inspired outline icons for the Liquid Glass theme."""
+        if Image is None or ImageDraw is None or ImageTk is None:
+            return None
+        cache_key = (name, color, size)
+        if cache_key in self._icon_images:
+            return self._icon_images[cache_key]
+        scale = 3
+        canvas_size = 64
+        image = Image.new("RGBA", (canvas_size * scale, canvas_size * scale), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+
+        def xy(value):
+            return int(round(value * scale))
+
+        def line(points, width=4):
+            draw.line([(xy(x), xy(y)) for x, y in points], fill=color,
+                      width=xy(width), joint="curve")
+
+        def ellipse(bounds, width=4, fill=None):
+            box = tuple(xy(v) for v in bounds)
+            draw.ellipse(box, outline=color if fill is None else None,
+                         fill=fill, width=xy(width))
+
+        def rounded(bounds, radius=7, width=4, fill=None):
+            box = tuple(xy(v) for v in bounds)
+            draw.rounded_rectangle(box, radius=xy(radius),
+                                   outline=color if fill is None else None,
+                                   fill=fill, width=xy(width))
+
+        if name == "rss":
+            ellipse((12, 44, 20, 52), fill=color)
+            draw.arc(tuple(xy(v) for v in (10, 32, 34, 56)), 270, 360, fill=color, width=xy(5))
+            draw.arc(tuple(xy(v) for v in (10, 16, 50, 56)), 270, 360, fill=color, width=xy(5))
+        elif name == "home":
+            line([(8, 29), (32, 9), (56, 29)], 5)
+            line([(15, 26), (15, 55), (49, 55), (49, 26)], 5)
+            line([(27, 55), (27, 39), (37, 39), (37, 55)], 4)
+        elif name in ("favorite", "favorite_filled"):
+            points = [(32, 7), (39, 24), (58, 25), (43, 38), (48, 57),
+                      (32, 46), (16, 57), (21, 38), (6, 25), (25, 24)]
+            if name == "favorite_filled":
+                draw.polygon([(xy(x), xy(y)) for x, y in points], fill=color)
+            else:
+                line(points + [points[0]], 4)
+        elif name == "refresh":
+            draw.arc(tuple(xy(v) for v in (10, 10, 54, 54)), 45, 315, fill=color, width=xy(5))
+            line([(48, 12), (54, 12), (54, 19)], 5)
+            line([(16, 52), (10, 52), (10, 45)], 5)
+        elif name == "settings":
+            import math
+            ellipse((18, 18, 46, 46), width=5)
+            ellipse((27, 27, 37, 37), width=4)
+            for angle in range(0, 360, 45):
+                a = math.radians(angle)
+                x1, y1 = 32 + 22 * math.cos(a), 32 + 22 * math.sin(a)
+                x2, y2 = 32 + 28 * math.cos(a), 32 + 28 * math.sin(a)
+                line([(x1, y1), (x2, y2)], 5)
+        elif name == "add":
+            line([(32, 12), (32, 52)], 5)
+            line([(12, 32), (52, 32)], 5)
+        elif name == "sources":
+            rounded((14, 10, 50, 43), 6, 4)
+            line([(22, 21), (42, 21)], 3)
+            line([(22, 29), (39, 29)], 3)
+            line([(22, 37), (35, 37)], 3)
+            line([(19, 49), (45, 49)], 4)
+            line([(24, 55), (40, 55)], 4)
+        elif name == "delete":
+            rounded((17, 20, 47, 55), 5, 4)
+            line([(12, 15), (52, 15)], 4)
+            line([(24, 10), (40, 10)], 4)
+            line([(26, 27), (26, 48)], 3)
+            line([(38, 27), (38, 48)], 3)
+        elif name == "search":
+            ellipse((9, 8, 43, 42), width=5)
+            line([(36, 36), (55, 55)], 5)
+        elif name == "open":
+            rounded((9, 19, 43, 55), 5, 4)
+            line([(28, 36), (54, 10), (54, 27)], 5)
+            line([(54, 10), (37, 10)], 5)
+        elif name == "compact":
+            rounded((8, 13, 56, 51), 6, 4)
+            line([(8, 24), (56, 24)], 4)
+            line([(17, 18), (19, 18)], 4)
+            line([(26, 18), (28, 18)], 4)
+        elif name == "expand":
+            line([(10, 26), (10, 10), (26, 10)], 5)
+            line([(38, 10), (54, 10), (54, 26)], 5)
+            line([(54, 38), (54, 54), (38, 54)], 5)
+            line([(26, 54), (10, 54), (10, 38)], 5)
+        elif name == "close":
+            line([(15, 15), (49, 49)], 5)
+            line([(49, 15), (15, 49)], 5)
+        elif name == "github":
+            ellipse((10, 10, 54, 54), width=5)
+            line([(21, 39), (21, 28), (27, 22), (37, 22), (43, 28), (43, 39)], 4)
+            line([(25, 22), (23, 15)], 4)
+            line([(39, 22), (41, 15)], 4)
+        else:
+            ellipse((17, 17, 47, 47), width=4)
+
+        resampling = getattr(Image, "Resampling", Image).LANCZOS
+        image = image.resize((size, size), resampling)
+        photo = ImageTk.PhotoImage(image)
+        self._icon_images[cache_key] = photo
+        return photo
+
+    def _refresh_icon_button(self, button):
+        name = getattr(button, "_minirss_icon_name", None)
+        if not name:
+            return
+        glass_mode = self.theme_var.get() == "iOS 27 · Liquid Glass"
+        if glass_mode:
+            colors = self._palette()
+            style_name = str(button.cget("style"))
+            color = colors["accent"] if ("Active" in style_name or name == "favorite_filled") else colors.get("icon", colors["fg"])
+            photo = self._make_icon_photo(name, color, 24 if style_name.startswith("Dock") else 22)
+            if photo is not None:
+                button.configure(text="", image=photo, compound="center")
+                button._minirss_image = photo
+                return
+        button.configure(image="", text=self._glyph(name), compound="center")
+        button._minirss_image = None
+
+    def _refresh_icon_buttons(self):
+        for button in getattr(self, "_icon_buttons", []):
+            try:
+                self._refresh_icon_button(button)
+            except tk.TclError:
+                pass
+
+    def _set_icon_button_symbol(self, button, name: str):
+        if button is None:
+            return
+        button._minirss_icon_name = name
+        self._refresh_icon_button(button)
+
     def _icon_button(self, parent, glyph: str, tooltip: str, command, style="Icon.TButton", width=3):
         name = next((key for key, value in GLYPHS.items() if value == glyph), None)
         display_glyph = self._glyph(name) if name else glyph
         button = ttk.Button(parent, text=display_glyph, command=command, style=style, width=width)
+        if name:
+            button._minirss_icon_name = name
+            self._icon_buttons.append(button)
+            self._refresh_icon_button(button)
         self._tooltips.append(ToolTip(button, tooltip, self._palette))
         return button
 
@@ -801,50 +968,78 @@ class MiniRSSApp:
         style.map("TCheckbutton", background=[("active", colors["bg"])])
         style.configure("TLabelframe", background=colors["bg"], foreground=colors["fg"], bordercolor=colors["border"])
         style.configure("TLabelframe.Label", background=colors["bg"], foreground=colors["fg"], font=("Segoe UI", 9, "bold"))
+        style.configure("GlassHeader.TFrame", background=colors["bg"], borderwidth=0, relief="flat")
         if self.theme_var.get() == "iOS 27 · Liquid Glass":
             # Soft blue-white surfaces, bright edges and generous spacing evoke
             # the layered Liquid Glass look while keeping native Windows controls.
-            style.configure("TButton", font=("Segoe UI", 10), padding=(14, 10),
+            # Native Windows 11 Mica plus bright, layered surfaces make the
+            # separate iOS-style theme feel like glass without replacing other themes.
+            style.configure("GlassHeader.TFrame", background=colors["glass"], borderwidth=1,
+                            bordercolor=colors["glass_highlight"], lightcolor=colors["glass_highlight"],
+                            darkcolor=colors["glass_edge"], relief="solid")
+            style.configure("TButton", font=("Segoe UI", 10), padding=(13, 10),
                             background=colors["glass"], foreground=colors["fg"],
-                            borderwidth=1, bordercolor=colors["glass_edge"], relief="flat")
-            style.map("TButton", background=[("active", colors["hover"]), ("pressed", colors["selected"])],
+                            borderwidth=1, bordercolor=colors["glass_edge"],
+                            lightcolor=colors["glass_highlight"], darkcolor=colors["glass_shadow"],
+                            relief="raised")
+            style.map("TButton", background=[("active", colors["glass_highlight"]),
+                                              ("pressed", colors["selected"])],
                       foreground=[("disabled", colors["disabled"])])
             style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"), padding=(16, 10),
                             background=colors["accent"], foreground="#ffffff",
-                            borderwidth=1, bordercolor=colors["glass_highlight"], relief="flat")
-            style.configure("Icon.TButton", font=self.icon_font, padding=(10, 9), width=3,
+                            borderwidth=1, bordercolor=colors["glass_highlight"],
+                            lightcolor=colors["glass_highlight"], darkcolor=colors["accent_active"],
+                            relief="raised")
+            style.map("Accent.TButton", background=[("active", colors["accent_active"]),
+                                                       ("pressed", colors["accent"])])
+            style.configure("Icon.TButton", font=self.icon_font, padding=(9, 9), width=3,
                             background=colors["glass"], foreground=colors["fg"],
-                            borderwidth=1, bordercolor=colors["glass_edge"], relief="flat")
+                            borderwidth=1, bordercolor=colors["glass_edge"],
+                            lightcolor=colors["glass_highlight"], darkcolor=colors["glass_shadow"],
+                            relief="raised")
+            style.map("Icon.TButton", background=[("active", colors["glass_highlight"]),
+                                                    ("pressed", colors["selected"])])
             style.configure("Card.TFrame", background=colors["surface"], borderwidth=1,
-                            bordercolor=colors["glass_highlight"], relief="solid")
+                            bordercolor=colors["glass_highlight"], lightcolor=colors["glass_highlight"],
+                            darkcolor=colors["glass_edge"], relief="solid")
             style.configure("Detail.TFrame", background=colors["detail"], borderwidth=1,
-                            bordercolor=colors["glass_edge"], relief="solid")
+                            bordercolor=colors["glass_edge"], lightcolor=colors["glass_highlight"],
+                            darkcolor=colors["glass_shadow"], relief="solid")
             style.configure("Sidebar.TFrame", background=colors["sidebar"])
             style.configure("Header.TLabel", font=("Segoe UI", 24, "bold"),
-                            foreground=colors["fg"], background=colors["bg"])
+                            foreground=colors["fg"], background=colors["glass"])
             style.configure("Sub.TLabel", font=("Segoe UI", 9), foreground=colors["muted"],
-                            background=colors["bg"])
-            style.configure("Treeview", font=("Segoe UI", 10), rowheight=44,
+                            background=colors["glass"])
+            style.configure("Treeview", font=("Segoe UI", 10), rowheight=46,
                             background=colors["tree"], fieldbackground=colors["tree"],
                             foreground=colors["fg"], borderwidth=0, relief="flat")
             style.configure("Treeview.Heading", font=("Segoe UI", 9, "bold"),
                             background=colors["heading"], foreground=colors["muted"],
-                            relief="flat", padding=(12, 12))
-            style.configure("TCombobox", padding=(11, 10), fieldbackground=colors["input"],
-                            background=colors["input"], foreground=colors["fg"], borderwidth=1,
-                            arrowsize=14)
+                            relief="flat", padding=(13, 12), borderwidth=0)
+            style.map("Treeview", background=[("selected", colors["selected"])],
+                      foreground=[("selected", colors["fg"])])
+            style.configure("TCombobox", padding=(12, 10), fieldbackground=colors["input"],
+                            background=colors["glass"], foreground=colors["fg"],
+                            borderwidth=1, bordercolor=colors["glass_edge"], arrowsize=14)
             style.configure("TEntry", padding=(12, 10), fieldbackground=colors["input"],
-                            foreground=colors["fg"], borderwidth=1)
+                            foreground=colors["fg"], borderwidth=1, bordercolor=colors["glass_edge"])
+            style.configure("TSeparator", background=colors["glass_edge"])
             style.configure("Dock.TFrame", background=colors["glass"], borderwidth=1,
-                            bordercolor=colors["glass_highlight"], relief="solid")
-            style.configure("Dock.TButton", font=(self.icon_font[0], 17), padding=(16, 8),
-                            background=colors["glass"], foreground=colors["muted"],
-                            borderwidth=1, bordercolor=colors["glass_edge"], relief="flat")
-            style.map("Dock.TButton", background=[("active", colors["hover"]), ("pressed", colors["selected"])],
+                            bordercolor=colors["glass_highlight"], lightcolor=colors["glass_highlight"],
+                            darkcolor=colors["glass_edge"], relief="raised")
+            style.configure("Dock.TButton", font=(self.icon_font[0], 17), padding=(15, 9),
+                            background=colors["glass"], foreground=colors["icon"],
+                            borderwidth=1, bordercolor=colors["glass_edge"],
+                            lightcolor=colors["glass_highlight"], darkcolor=colors["glass_shadow"],
+                            relief="raised")
+            style.map("Dock.TButton", background=[("active", colors["glass_highlight"]),
+                                                    ("pressed", colors["selected"])],
                       foreground=[("active", colors["accent"])])
-            style.configure("DockActive.TButton", font=(self.icon_font[0], 17), padding=(16, 8),
+            style.configure("DockActive.TButton", font=(self.icon_font[0], 17), padding=(15, 9),
                             background=colors["accent_soft"], foreground=colors["accent"],
-                            borderwidth=1, bordercolor=colors["glass_highlight"], relief="flat")
+                            borderwidth=1, bordercolor=colors["glass_highlight"],
+                            lightcolor=colors["glass_highlight"], darkcolor=colors["glass_edge"],
+                            relief="raised")
             style.map("DockActive.TButton", background=[("active", colors["accent_soft"])],
                       foreground=[("active", colors["accent"])])
         self.root.configure(bg=colors["bg"])
@@ -866,6 +1061,32 @@ class MiniRSSApp:
             )
         if hasattr(self, "nav_buttons"):
             self._update_nav_state()
+        self._refresh_icon_buttons()
+        if hasattr(self, "search_icon_label"):
+            if self.theme_var.get() == "iOS 27 · Liquid Glass":
+                photo = self._make_icon_photo("search", colors.get("icon", colors["fg"]), 19)
+                if photo is not None:
+                    self.search_icon_label.configure(text="", image=photo)
+                    self.search_icon_label._minirss_image = photo
+                else:
+                    self.search_icon_label.configure(image="", text=self._glyph("search"), font=self.icon_font)
+            else:
+                self.search_icon_label.configure(image="", text=self._glyph("search"), font=self.icon_font)
+                self.search_icon_label._minirss_image = None
+        if hasattr(self, "logo"):
+            if self.theme_var.get() == "iOS 27 · Liquid Glass":
+                photo = self._make_icon_photo("rss", colors["accent"], 34)
+                if photo is not None:
+                    self.logo.configure(image=photo, text="", bg=colors["accent_soft"],
+                                         padx=13, pady=8)
+                    self.logo._minirss_image = photo
+                else:
+                    self.logo.configure(image="", text=self._glyph("rss"), bg=colors["accent_soft"],
+                                        fg=colors["accent"], font=(self.icon_font[0], 20), padx=14, pady=9)
+            else:
+                self.logo.configure(image="", text=self._glyph("rss"), bg=colors["accent"],
+                                    fg="#ffffff", font=(self.icon_font[0], 19), padx=12, pady=8)
+                self.logo._minirss_image = None
         if hasattr(self, "ios_dock"):
             self._apply_theme_layout()
 
@@ -984,12 +1205,17 @@ class MiniRSSApp:
             self.tray_available = False
             return
         try:
-            icon_image = Image.new("RGB", (64, 64), "#2864dc")
+            icon_image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            pixels = icon_image.load()
+            for y in range(64):
+                for x in range(64):
+                    t = (x + y) / 126
+                    pixels[x, y] = (int(42 + 34 * t), int(105 + 42 * t), int(226 + 18 * t), 255)
             draw = ImageDraw.Draw(icon_image)
-            # Simple white RSS glyph, drawn without external image assets.
-            draw.ellipse((13, 45, 20, 52), fill="white")
-            draw.arc((10, 35, 31, 56), start=270, end=360, fill="white", width=5)
-            draw.arc((10, 24, 43, 57), start=270, end=360, fill="white", width=5)
+            draw.rounded_rectangle((1, 1, 62, 62), radius=16, outline=(255, 255, 255, 100), width=2)
+            draw.ellipse((12, 44, 20, 52), fill="white")
+            draw.arc((10, 33, 34, 57), start=270, end=360, fill="white", width=5)
+            draw.arc((10, 15, 53, 57), start=270, end=360, fill="white", width=5)
             menu = pystray.Menu(
                 pystray.MenuItem("Открыть MiniRSS", lambda _icon, _item: self.root.after(0, self._show_from_tray), default=True),
                 pystray.MenuItem("Обновить ленты", lambda _icon, _item: self.root.after(0, self._refresh_selected)),
@@ -1163,18 +1389,18 @@ try {
         self.outer = ttk.Frame(self.root, padding=(18, 14, 18, 14))
         self.outer.pack(fill="both", expand=True)
 
-        self.header = ttk.Frame(self.outer)
+        self.header = ttk.Frame(self.outer, style="GlassHeader.TFrame", padding=(16, 11))
         self.header.pack(fill="x", pady=(0, 15))
-        brand = ttk.Frame(self.header)
+        brand = ttk.Frame(self.header, style="GlassHeader.TFrame")
         brand.pack(side="left", fill="x", expand=True)
         self.logo = tk.Label(brand, text=self._glyph("rss"), font=(self.icon_font[0], 19),
                              bg=THEMES[self.theme_var.get()]["accent"], fg="#ffffff", padx=12, pady=8)
         self.logo.pack(side="left", padx=(0, 11))
-        title_area = ttk.Frame(brand)
+        title_area = ttk.Frame(brand, style="GlassHeader.TFrame")
         title_area.pack(side="left", fill="x", expand=True)
         ttk.Label(title_area, text="MiniRSS", style="Header.TLabel").pack(anchor="w")
         ttk.Label(title_area, text="Твои новости в одном месте", style="Sub.TLabel").pack(anchor="w", pady=(0, 1))
-        actions = ttk.Frame(self.header)
+        actions = ttk.Frame(self.header, style="GlassHeader.TFrame")
         actions.pack(side="right")
         self.refresh_button = self._icon_button(actions, GLYPHS["refresh"], "Обновить ленты", self._refresh_selected)
         self.refresh_button.pack(side="left", padx=(4, 0))
@@ -1227,8 +1453,9 @@ try {
 
         self.search_frame = ttk.Frame(self.main_content, style="Card.TFrame")
         self.search_frame.pack(fill="x", pady=(0, 11))
-        ttk.Label(self.search_frame, text=self._glyph("search"), font=self.icon_font,
-                  style="Panel.TLabel").pack(side="left", padx=(3, 8))
+        self.search_icon_label = ttk.Label(self.search_frame, text=self._glyph("search"),
+                                           font=self.icon_font, style="Panel.TLabel")
+        self.search_icon_label.pack(side="left", padx=(3, 8))
         search_entry = ttk.Entry(self.search_frame, textvariable=self.search_var)
         search_entry.pack(fill="x", expand=True, side="left")
         search_entry.bind("<KeyRelease>", lambda _e: self._render_articles())
@@ -1632,8 +1859,10 @@ try {
             self.detail_title.configure(text="Выберите новость")
             self.detail_source.configure(text="")
             self.open_button.configure(state="disabled")
-            self.favorite_button.configure(state="disabled", text=self._glyph("favorite"))
-            self.compact_favorite_button.configure(state="disabled", text=self._glyph("favorite"))
+            self._set_icon_button_symbol(self.favorite_button, "favorite")
+            self._set_icon_button_symbol(self.compact_favorite_button, "favorite")
+            self.favorite_button.configure(state="disabled")
+            self.compact_favorite_button.configure(state="disabled")
             text = ""
         else:
             self.detail_title.configure(text=article.get("title", "Без названия"))
@@ -1660,8 +1889,11 @@ try {
             return
         is_saved = self._is_favorite(selected)
         glyph = self._glyph("favorite_filled") if is_saved else self._glyph("favorite")
-        self.favorite_button.configure(state="normal", text=glyph)
-        self.compact_favorite_button.configure(state="normal", text=glyph)
+        symbol = "favorite_filled" if is_saved else "favorite"
+        self._set_icon_button_symbol(self.favorite_button, symbol)
+        self._set_icon_button_symbol(self.compact_favorite_button, symbol)
+        self.favorite_button.configure(state="normal")
+        self.compact_favorite_button.configure(state="normal")
 
     def _toggle_favorite(self):
         if not self.current_article:
