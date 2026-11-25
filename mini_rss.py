@@ -1541,6 +1541,7 @@ try {
                 button.configure(style=style_name)
             except tk.TclError:
                 pass
+        self._refresh_icon_buttons()
 
     def _set_compact_mode(self, enabled: bool, save: bool = True):
         self.compact_mode = bool(enabled)
