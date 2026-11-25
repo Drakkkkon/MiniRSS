@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover - available on Windows only
     winreg = None
 
 APP_NAME = "MiniRSS"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 REFRESH_INTERVAL_MS = 15 * 60 * 1000
 UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
 REQUEST_TIMEOUT = 15
