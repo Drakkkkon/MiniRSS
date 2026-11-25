@@ -163,6 +163,15 @@ class GithubUpdateTests(unittest.TestCase):
         self.assertIn("Improvements", release["notes"])
 
 
+class InstallerScriptTests(unittest.TestCase):
+    def test_installer_allows_command_line_install_scope_override(self):
+        setup_path = ROOT / "setup.iss"
+        content = setup_path.read_text(encoding="utf-8")
+        # Inno Setup's "dialog" override also enables /ALLUSERS and /CURRENTUSER.
+        self.assertIn("PrivilegesRequiredOverridesAllowed=dialog", content)
+        self.assertNotIn("PrivilegesRequiredOverridesAllowed=dialog,commandline", content)
+
+
 class PackageTests(unittest.TestCase):
     def test_update_package_contains_exe_and_sidecar(self):
         with tempfile.TemporaryDirectory() as temp:
